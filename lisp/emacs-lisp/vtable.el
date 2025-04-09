@@ -839,11 +839,22 @@ If NEXT, do the next column."
            (buffer-substring (point-min) (1- (point-max))))))
   (vtable-header-mode 1))
 
-(defun vtable--limit-string (string pixels)
-  (while (and (length> string 0)
-              (> (string-pixel-width string) pixels))
-    (setq string (substring string 0 (1- (length string)))))
-  string)
+(defun vtable--limit-string (string max-pixel-width)
+  "Return the longest prefix of STRING whose pixel width is <= MAX-PIXEL-WIDTH."
+  (let* ((low 0)
+         (high (length string))
+         (last-good 0))
+    ;; Perform a binary search.  This is more performant than iterating
+    ;; through each character in sequence.
+    (while (<= low high)
+      (let* ((mid (floor (+ low high) 2))
+             (substr (substring string 0 mid))
+             (width (string-pixel-width substr)))
+        (if (<= width max-pixel-width)
+            (setq low (1+ mid)
+                  last-good mid)
+          (setq high (1- mid)))))
+    (substring string 0 last-good)))
 
 (defun vtable--char-width (table)
   (string-pixel-width (propertize "x" 'face (vtable-face table))))
