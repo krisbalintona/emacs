@@ -27,6 +27,9 @@
 (require 'ert)
 (require 'ert-x)
 
+(defun test--string-width-less-equal (str max-width)
+  (<= (string-pixel-width str) max-width))
+
 (ert-deftest test-vstable-compute-columns ()
   (should
    (equal (mapcar
@@ -68,5 +71,62 @@
                       ))
               (mapcar #'cadr (vtable-objects table))))
           (number-sequence 0 11))))
+
+(ert-deftest vtable--limit-string/ascii ()
+  (let* ((s "Hello, world!")
+         (w (string-pixel-width s)))
+    (should (string= (vtable--limit-string s w) s))
+    (should (test--string-width-less-equal (vtable--limit-string s (1- w)) (1- w)))))
+
+(ert-deftest vtable--limit-string/cjk ()
+  (let* ((s "漢字テスト")
+         (w (string-pixel-width s)))
+    (should (string= (vtable--limit-string s w) s))
+    (should (test--string-width-less-equal (vtable--limit-string s (1- w)) (1- w)))))
+
+(ert-deftest vtable--limit-string/emoji ()
+  (let* ((s "😀😁😂🤣😃😄")
+         (w (string-pixel-width s)))
+    (should (string= (vtable--limit-string s w) s))
+    (should (test--string-width-less-equal (vtable--limit-string s (1- w)) (1- w)))))
+
+(ert-deftest vtable--limit-string/combining-chars ()
+  (let* ((s (concat "a" (make-string 10 ?́))) ; a + 10 combining accents
+         (w (string-pixel-width s)))
+    ;; Should not be truncated unnecessarily
+    (should (string= (vtable--limit-string s w) s))
+    ;; Truncating one base char should make a noticeable difference
+    (should (test--string-width-less-equal (vtable--limit-string s (1- w)) (1- w)))))
+
+(ert-deftest vtable--limit-string/zwj-ligature ()
+  ;; Sequence of characters forming a single ligature or emoji via ZWJ
+  (let* ((s "👨‍👩‍👧‍👦") ;; family emoji: man + ZWJ + woman + ZWJ + girl + ZWJ + boy
+         (w (string-pixel-width s)))
+    ;; The full sequence should still be valid
+    (should (string= (vtable--limit-string s w) s))
+    ;; But lower widths should result in truncation
+    (should (test--string-width-less-equal (vtable--limit-string s (1- w)) (1- w)))))
+
+(ert-deftest vtable--limit-string/zero-width-space ()
+  (let* ((s (concat "foo" "\u200B" "bar")) ; includes zero-width space
+         (w (string-pixel-width s)))
+    (should (string= (vtable--limit-string s w) s))
+    (should (test--string-width-less-equal (vtable--limit-string s (1- w)) (1- w)))))
+
+(ert-deftest vtable--limit-string/exact-match ()
+  (let* ((s "abc")
+         (w (string-pixel-width s)))
+    (should (string= (vtable--limit-string s w) s))
+    (should (string= (vtable--limit-string s (1- w))
+                     (substring s 0 (1- (length s)))))))
+
+(ert-deftest vtable--limit-string/combining-character-invariant ()
+  (let* ((base "a")
+         (combining "́") ;; U+0301 combining acute accent
+         (combined (concat base combining))
+         (width-base (string-pixel-width base))
+         (width-combined (string-pixel-width combined)))
+    ;; Ensure pixel width didn't change — they render as one glyph
+    (should (= width-base width-combined))))
 
 ;;; vtable-tests.el ends here
