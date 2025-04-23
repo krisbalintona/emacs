@@ -30,14 +30,40 @@
 
 (defface vtable
   '((t :inherit variable-pitch))
-  "Face used (by default) for vtables."
+  "Face used (by default) for vtable bodies."
   :version "29.1"
   :group 'faces)
+
+(defface vtable-header
+  '((t :inherit (header-line vtable)))
+  "Face used (by default) for vtable headers."
+  :version "31.1"
+  :group 'faces)
+
+(defface vtable-sort-ind-ascend
+  '((t :inherit vtable-header))
+  "Face used (by default) for vtable ascend sort indicator."
+  :version "31.1"
+  :group 'faces)
+
+(defface vtable-sort-ind-descend
+  '((t :inherit vtable-header))
+  "Face used (by default) for vtable descend sort indicator."
+  :version "31.1"
+  :group 'faces)
+
+(defvar vtable-sort-ind-default '((?▼ ?v)
+                                  (?▲ ?^))
+  "Default descending and ascending sort indicators.
+The form is a list of two conses of two characters.  The first set indicates
+sorting descending, the second ascending.  The first character in each cons
+is for fonts that can display symbols, and the second is plain text.")
 
 (cl-defstruct vtable-column
   "A vtable column."
   name
   width
+  infer-width ; nil or 'data uses data, 'data+name includes column name
   min-width
   max-width
   primary
@@ -58,15 +84,24 @@
    (displayer :initarg :displayer :accessor vtable-displayer)
    (use-header-line :initarg :use-header-line
                     :accessor vtable-use-header-line)
+   (text-scale :initarg :text-scale :accessor vtable-text-scale)
+   (text-scale-header :initarg :text-scale-header :accessor vtable-text-scale-header)
    (face :initarg :face :accessor vtable-face)
+   (header-face :initarg :header-face :accessor vtable-header-face)
    (actions :initarg :actions :accessor vtable-actions)
    (keymap :initarg :keymap :accessor vtable-keymap)
    (separator-width :initarg :separator-width :accessor vtable-separator-width)
    (divider :initarg :divider :accessor vtable-divider :initform nil)
+   (divider-on-header :initarg :divider-on-header :accessor vtable-divider-on-header :initform nil)
    (sort-by :initarg :sort-by :accessor vtable-sort-by)
+   (sort-ind :initarg :sort-ind :accessor vtable-sort-ind)
+   (sort-ind-face-ascend :initarg :sort-ind-face-ascend :accessor vtable-sort-ind-face-ascend)
+   (sort-ind-face-descend :initarg :sort-ind-face-descend :accessor vtable-sort-ind-face-descend)
    (ellipsis :initarg :ellipsis :accessor vtable-ellipsis)
+   (row-properties :initarg :row-properties :accessor vtable-row-properties)
    (column-colors :initarg :column-colors :accessor vtable-column-colors)
    (row-colors :initarg :row-colors :accessor vtable-row-colors)
+   (close-opt :initarg :close-opt :accessor vtable-close-opt)
    (-cached-colors :initform nil)
    (-cache :initform (make-hash-table :test #'equal))
    (-cached-keymap :initform nil)
@@ -75,6 +110,7 @@
 
 (defvar-keymap vtable-map
   "S" #'vtable-sort-by-current-column
+  "U" #'vtable-unsort
   "{" #'vtable-narrow-current-column
   "}" #'vtable-widen-current-column
   "g" #'vtable-revert-command
@@ -86,21 +122,43 @@
   "<follow-link>" 'mouse-face
   "<mouse-2>" #'vtable-header-line-sort)
 
+(defvar-keymap vtable-nav-map
+  "n"       #'vtable-next-line
+  "C-n"     #'vtable-next-line
+  "<down>"  #'vtable-next-line
+  "<tab>"   #'vtable-next-line
+  "p"       #'vtable-prev-line
+  "C-p"     #'vtable-prev-line
+  "<up>"    #'vtable-prev-line
+  "S-<tab>" #'vtable-prev-line
+  "q"       #'vtable-close)
+
 (cl-defun make-vtable (&key columns objects objects-function
                             getter
                             formatter
                             displayer
                             (use-header-line t)
                             (face 'vtable)
+                            (header-face 'vtable-header)
                             actions keymap
+                            (use-nav-keymap nil)
                             (separator-width 1)
                             divider
                             divider-width
+                            (divider-on-header t)
+                            divider-intangible
                             sort-by
+                            (sort-ind vtable-sort-ind-default)
+                            (sort-ind-face-ascend 'vtable-sort-ind-ascend)
+                            (sort-ind-face-descend 'vtable-sort-ind-descend)
                             (ellipsis t)
                             (insert t)
+                            row-properties
                             row-colors
-                            column-colors)
+                            column-colors
+                            text-scale
+                            text-scale-header
+                            close-opt)
   "Create and insert a vtable at point.
 The vtable object is returned.  If INSERT is nil, the table won't
 be inserted.
@@ -119,14 +177,23 @@ See info node `(vtable)Top' for vtable documentation."
           :formatter formatter
           :displayer displayer
           :use-header-line use-header-line
+          :text-scale text-scale
+          :text-scale-header text-scale-header
           :face face
+          :header-face header-face
           :actions actions
           :keymap keymap
           :separator-width separator-width
+          :divider-on-header divider-on-header
           :sort-by sort-by
+          :sort-ind sort-ind
+          :sort-ind-face-ascend sort-ind-face-ascend
+          :sort-ind-face-descend sort-ind-face-descend
+          :row-properties row-properties
           :row-colors row-colors
           :column-colors column-colors
-          :ellipsis ellipsis)))
+          :ellipsis ellipsis
+          :close-opt close-opt)))
     ;; Store whether the user has specified columns or not.
     (setf (slot-value table '-has-column-spec) (not (not columns)))
     ;; Auto-generate the columns.
@@ -155,26 +222,42 @@ See info node `(vtable)Top' for vtable documentation."
             (vtable--compute-colors row-colors column-colors)))
     ;; Compute the divider.
     (when (or divider divider-width)
-      (setf (vtable-divider table)
-            (propertize
-             (or (copy-sequence divider)
-                 (propertize
-                  " " 'display
-                  (list 'space :width
-                        (list (vtable--compute-width table divider-width)))))
-             'mouse-face 'highlight
-             'keymap
-             (define-keymap
-               "<drag-mouse-1>" #'vtable--drag-resize-column
-               "<down-mouse-1>" #'ignore))))
+      (let ((div
+             (propertize
+              (or (copy-sequence divider)
+                  (propertize
+                   " " 'display
+                   (list 'space :width
+                         (list (vtable--compute-width table divider-width)))))
+              'mouse-face 'highlight
+              'keymap
+              (define-keymap
+                "<drag-mouse-1>" #'vtable--drag-resize-column
+                "<down-mouse-1>" #'ignore))))
+        (when divider-intangible
+          (add-text-properties
+           0 (length div)
+           (list 'field t 'rear-nonsticky t 'front-sticky t
+                 'intangible-text t 'cursor-intangible t)
+           div))
+        (setf (vtable-divider table) div)
+        (when divider-intangible
+          (cursor-intangible-mode))))
     ;; Compute the keymap.
-    (setf (slot-value table '-cached-keymap) (vtable--make-keymap table))
+    (setf (slot-value table '-cached-keymap) (vtable--make-keymap table use-nav-keymap))
     (unless sort-by
       (seq-do-indexed (lambda (column index)
                         (when (vtable-column-primary column)
                           (push (cons index (vtable-column-primary column))
                                 (vtable-sort-by table))))
                       (vtable-columns table)))
+    (when text-scale
+      (add-hook 'text-scale-mode-hook
+                (lambda ()
+                  (when-let* ((table (vtable-current-table)))
+                    (when (vtable-text-scale table)
+                      (vtable-revert-command))))
+                nil 'local))
     (when insert
       (vtable-insert table))
     table))
@@ -407,7 +490,7 @@ This also updates the displayed table."
                            (propertize (truncate-string-ellipsis)
                                        'face (vtable-face table))
                          ""))
-             (ellipsis-width (string-pixel-width ellipsis))
+             (ellipsis-width (vtable--string-pixel-width ellipsis))
              (elem (if location  ; This binding mirrors the binding of `pos' above.
                        (if (integerp location)
                            (nth location (car cache))
@@ -529,7 +612,7 @@ recompute the column specs when the table data has changed."
                        (propertize (truncate-string-ellipsis)
                                    'face (vtable-face table))
                      ""))
-         (ellipsis-width (string-pixel-width ellipsis))
+         (ellipsis-width (vtable--string-pixel-width ellipsis))
          ;; We maintain a cache per screen/window width, so that we render
          ;; correctly if Emacs is open on two different screens (or the
          ;; user resizes the frame).
@@ -576,6 +659,7 @@ recompute the column specs when the table data has changed."
      (lambda (elem index)
        (let ((value (nth 0 elem))
              (column (elt columns index))
+             (column-width (vtable--text-scale-pixels (elt widths index)))
              (pre-computed (nth 2 elem)))
          ;; See if we have any formatters here.
          (cond
@@ -586,37 +670,39 @@ recompute the column specs when the table data has changed."
            (setq value (funcall (vtable-formatter table)
                                 value index table)
                  pre-computed nil)))
-         (let ((displayed
-                ;; Allow any displayers to have their say.
-                (cond
-                 ((vtable-column-displayer column)
-                  (funcall (vtable-column-displayer column)
-                           value (elt widths index) table))
-                 ((vtable-displayer table)
-                  (funcall (vtable-displayer table)
-                           value index (elt widths index) table))
-                 (pre-computed
-                  ;; If we don't have a displayer, use the pre-made
-                  ;; (cached) string value.
-                  (if (> (nth 1 elem) (elt widths index))
-                      (concat
-                       (vtable--limit-string
-                        pre-computed (- (elt widths index)
-                                        (or ellipsis-width 0)))
-                       ellipsis)
-                    pre-computed))
-                 ;; Recompute widths.
-                 (t
-                  (if (> (string-pixel-width value) (elt widths index))
-                      (concat
-                       (vtable--limit-string
-                        value (- (elt widths index)
-                                 (or ellipsis-width 0)))
-                       ellipsis)
-                    value))))
-               (start (point))
-               ;; Don't insert the separator after the final column.
-               (last (= index (- (length line) 2))))
+         (let* ((displayed
+                 ;; Allow any displayers to have their say.
+                 (cond
+                  ((vtable-column-displayer column)
+                   (funcall (vtable-column-displayer column)
+                            value column-width table))
+                  ((vtable-displayer table)
+                   (funcall (vtable-displayer table)
+                            value index column-width table))
+                  (pre-computed
+                   ;; If we don't have a displayer, use the pre-made
+                   ;; (cached) string value.
+                   (if (> (nth 1 elem) column-width)
+                       (concat
+                        (vtable--limit-string
+                         pre-computed (- column-width
+                                         (or ellipsis-width 0)))
+                        ellipsis)
+                     pre-computed))
+                  ;; Recompute widths.
+                  (t
+                   (if (> (vtable--string-pixel-width value) column-width)
+                       (concat
+                        (vtable--limit-string
+                         value (- column-width
+                                  (or ellipsis-width 0)))
+                        ellipsis)
+                     value))))
+                (start (point))
+                ;; Don't insert the separator or divider after the final column.
+                (last (= index (- (length line) 2)))
+                ;; On the last column, leave one char width in header harmony.
+                (spacer (if last (vtable--char-width table) spacer)))
            (if (eq (vtable-column-align column) 'left)
                (progn
                  (insert displayed)
@@ -624,14 +710,14 @@ recompute the column specs when the table data has changed."
                           " " 'display
                           (list 'space
                                 :width (list
-                                        (+ (- (elt widths index)
-                                              (string-pixel-width displayed))
-                                           (if last 0 spacer)))))))
+                                        (+ (- column-width
+                                              (vtable--string-pixel-width displayed))
+                                           spacer))))))
              ;; Align to the right.
              (insert (propertize " " 'display
                                  (list 'space
-                                       :width (list (- (elt widths index)
-                                                       (string-pixel-width
+                                       :width (list (- column-width
+                                                       (vtable--string-pixel-width
                                                         displayed)))))
                      displayed)
              (unless last
@@ -644,7 +730,7 @@ recompute the column specs when the table data has changed."
              (add-face-text-property
               start (point)
               (elt column-colors (mod index (length column-colors)))))
-           (when divider
+           (when (and divider (not last))
              (insert divider)
              (setq start (point))))))
      (cdr line))
@@ -654,10 +740,14 @@ recompute the column specs when the table data has changed."
       (when-let* ((row-colors (slot-value table '-cached-colors)))
         (add-face-text-property
          start (point)
-         (elt row-colors (mod line-number (length row-colors))))))))
+         (elt row-colors (mod line-number (length row-colors))))))
+    (when (vtable-row-properties table)
+      (save-excursion
+        (forward-line -1)
+        (add-text-properties (pos-bol) (pos-eol) (vtable-row-properties table))))))
 
 (defun vtable--cache-key ()
-  (cons (frame-terminal) (window-width)))
+  (cons (frame-terminal) (window-body-width nil 'remap)))
 
 (defun vtable--cache (table)
   (gethash (vtable--cache-key) (slot-value table '-cache)))
@@ -693,78 +783,80 @@ recompute the column specs when the table data has changed."
 (defun vtable--indicator (table index)
   (let ((order (car (last (vtable-sort-by table)))))
     (if (eq index (car order))
-        ;; We're sorting by this column last, so return an indicator.
-        (catch 'found
-          (dolist (candidate (nth (if (eq (cdr order) 'ascend)
-                                      1
-                                    0)
-                                  '((?▼ ?v)
-                                    (?▲ ?^))))
-            (when (char-displayable-p candidate)
-              (throw 'found (string candidate)))))
-      "")))
+        (let* ((dir (cdr order))
+               (n (if (eq dir 'ascend) 1 0)))
+          ;; We're sorting by this column last, so return an indicator.
+          (catch 'found
+            (dolist (candidate (nth n (vtable-sort-ind table)))
+              (when (char-displayable-p candidate)
+                (throw 'found (cons (string candidate) dir))))
+            (cons "" nil))))))
 
 (defun vtable--insert-header-line (table widths spacer)
   ;; Insert the header directly into the buffer.
-  (let ((start (point))
-        (divider (vtable-divider table))
-        (cmap (define-keymap
-                "<header-line> <drag-mouse-1>" #'vtable--drag-resize-column
-                "<header-line> <down-mouse-1>" #'ignore))
-        (dmap (define-keymap
-                "<header-line> <drag-mouse-1>"
-                (lambda (e)
-                  (interactive "e")
-                  (vtable--drag-resize-column e t))
-                "<header-line> <down-mouse-1>" #'ignore)))
+  (let* ((start (point))
+         (divider (vtable-divider table))
+         (divider-px (vtable--string-pixel-width divider))
+         (divider-on-header (vtable-divider-on-header table))
+         (cmap (define-keymap
+                 "<header-line> <drag-mouse-1>" #'vtable--drag-resize-column
+                 "<header-line> <down-mouse-1>" #'ignore))
+         (dmap (define-keymap
+                 "<header-line> <drag-mouse-1>"
+                 (lambda (e)
+                   (interactive "e")
+                   (vtable--drag-resize-column e t))
+                 "<header-line> <down-mouse-1>" #'ignore)))
     (seq-do-indexed
      (lambda (column index)
-       (let* ((name (propertize
-                     (vtable-column-name column)
-                     'face (list 'header-line (vtable-face table))
-                     'mouse-face 'header-line-highlight
-                     'keymap cmap))
+       (let* ((name (vtable-column-name column))
+              (name (propertize name
+                                'mouse-face 'header-line-highlight
+                                'keymap cmap))
               (start (point))
-              (indicator (vtable--indicator table index))
-              (indicator-width (string-pixel-width indicator))
+              (column-width (vtable--text-scale-pixels (elt widths index)))
+              ;; Pad the indicator to avoid abutting its neighbors.
+              (indicator+dir (vtable--indicator table index))
+              (indicator (propertize
+                          (concat " " (car indicator+dir) " ")
+                          'face (if (eq (cdr indicator+dir) 'ascend)
+                                    (vtable-sort-ind-face-ascend table)
+                                  (vtable-sort-ind-face-descend table))
+                          'display '(space-width 0.5)))
+              (indicator-width (vtable--string-pixel-width indicator))
+              ;; Don't insert the separator or divider after the final column.
               (last (= index (1- (length (vtable-columns table)))))
-              displayed)
-         (setq displayed
-               (if (> (string-pixel-width name)
-                      (- (elt widths index) indicator-width))
-                   (vtable--limit-string
-                    name (- (elt widths index) indicator-width))
-                 name))
-         (let* ((indicator-lead-width
-                 ;; We want the indicator to not be quite flush right.
-                 (/ (vtable--char-width table) 2.0))
-                (indicator-pad-width (- (vtable--char-width table)
-                                        indicator-lead-width))
+              ;; On the last column, leave one char to stave off name truncation.
+              ;; We use the body face here but we could use the header face.
+              (spacer (if last (vtable--char-width table) spacer)))
+         (let* ((displayed
+                 (if (> (vtable--string-pixel-width name)
+                        (- (+ column-width spacer) indicator-width))
+                     (vtable--limit-string
+                      name (- (+ column-width spacer) indicator-width))
+                   name))
                 (fill-width
-                 (+ (- (elt widths index)
-                       (string-pixel-width displayed)
-                       indicator-width
-                       indicator-lead-width)
-                    (if last 0 spacer))))
+                 (+ (- column-width
+                       (vtable--string-pixel-width displayed)
+                       indicator-width)
+                    spacer)))
            (if (or (not last)
                    (zerop indicator-width)
-                   (< (seq-reduce #'+ widths 0) (window-width nil t)))
+                   (< (seq-reduce #'+ widths 0) (window-body-width nil t)))
                ;; Normal case.
                (insert
                 displayed
                 (propertize " " 'display
                             (list 'space :width (list fill-width)))
-                indicator
-                (propertize " " 'display
-                            (list 'space :width (list indicator-pad-width))))
+                indicator)
              ;; This is the final column, and we have a sorting
              ;; indicator, and the table is too wide for the window.
-             (let* ((pre-indicator (string-pixel-width
+             (let* ((pre-indicator (vtable--string-pixel-width
                                     (buffer-substring (point-min) (point))))
                     (pre-fill
-                     (- (window-width nil t)
+                     (- (window-body-width nil t)
                         pre-indicator
-                        (string-pixel-width displayed))))
+                        (vtable--string-pixel-width displayed))))
                (insert
                 displayed
                 (propertize " " 'display
@@ -774,11 +866,14 @@ recompute the column specs when the table data has changed."
                             (list 'space :width
                                   (list (- fill-width pre-fill))))))))
          (when (and divider (not last))
-           (insert (propertize divider 'keymap dmap)))
+           (if divider-on-header
+               (insert (propertize divider 'keymap dmap))
+             (insert (propertize " " 'display
+                                 (list 'space :width (list divider-px))))))
          (put-text-property start (point) 'vtable-column index)))
      (vtable-columns table))
     (insert "\n")
-    (add-face-text-property start (point) 'header-line)))
+    (add-face-text-property start (point) (vtable-header-face table) t)))
 
 (defun vtable--drag-resize-column (e &optional next)
   "Resize the column by dragging.
@@ -825,28 +920,49 @@ If NEXT, do the next column."
     (when recompute
       (vtable--compute-columns table t))))
 
+(defvar text-scale-remap-header-line)
+
 (defun vtable--set-header-line (table widths spacer)
-  (setq header-line-format
-        (string-replace
-         "%" "%%"
-         (with-temp-buffer
-           (insert " ")
-           (vtable--insert-header-line table widths spacer)
-           ;; Align the header with the (possibly) fringed buffer text.
-           (put-text-property
-            (point-min) (1+ (point-min))
-            'display '(space :align-to 0))
-           (buffer-substring (point-min) (1- (point-max))))))
-  (vtable-header-mode 1))
+  (let ((reference-buffer (current-buffer)))
+    (setq header-line-format
+          (concat
+           (propertize " " 'display
+                       (list 'space :align-to
+                             (list (line-number-display-width t))))
+           (string-replace
+            "%" "%%"
+            (with-temp-buffer
+              ;; Cribbed from string-pixel-width to normalize the temp
+              ;; buffer to the originating buffer and window.
+              (dolist (v '(face-remapping-alist
+                           char-property-alias-alist
+                           default-text-properties))
+                (if (local-variable-p v reference-buffer)
+                    (set (make-local-variable v)
+                         (buffer-local-value v reference-buffer))))
+              (vtable--insert-header-line table widths spacer)
+              (buffer-substring (point-min) (1- (point-max))))))))
+  (when (vtable-text-scale-header table)
+    (setq text-scale-remap-header-line t))
+  (vtable-header-mode))
 
 (defun vtable--limit-string (string pixels)
   (while (and (length> string 0)
-              (> (string-pixel-width string) pixels))
+              (> (vtable--string-pixel-width string) pixels))
     (setq string (substring string 0 (1- (length string)))))
   string)
 
+(defun vtable--text-scale-pixels (px)
+  ;; Adjust pixels for text-scaled buffers
+  (ceiling (* px (/ (float (default-font-width)) (frame-char-width)))))
+
+(defun vtable--string-pixel-width (str)
+  ;; Adjust pixel-width for text-scaled buffers
+  (vtable--text-scale-pixels (string-pixel-width str)))
+
 (defun vtable--char-width (table)
-  (string-pixel-width (propertize "x" 'face (vtable-face table))))
+  (vtable--string-pixel-width
+   (propertize "x" 'face (vtable-face table))))
 
 (defun vtable--compute-width (table spec)
   (cond
@@ -857,7 +973,7 @@ If NEXT, do the next column."
    ((string-match "\\([0-9.]+\\)px" spec)
     (string-to-number (match-string 1 spec)))
    ((string-match "\\([0-9.]+\\)%" spec)
-    (/ (* (string-to-number (match-string 1 spec)) (window-width nil t))
+    (/ (* (string-to-number (match-string 1 spec)) (window-body-width nil t))
        100))
    (t
     (error "Invalid spec: %s" spec))))
@@ -880,17 +996,25 @@ CACHE is TABLE's cache data as returned by `vtable--compute-cache'."
                               0)
                             ;; Otherwise, compute based on the displayed widths of the
                             ;; data.
-                            (seq-max (seq-map (lambda (elem)
-                                                (nth 1 (elt (cdr elem) index)))
-                                              cache)))))
+                            (max
+                             (seq-max (seq-map (lambda (elem)
+                                                 (nth 1 (elt (cdr elem) index)))
+                                               cache))
+                             (if (eq (vtable-column-infer-width column) 'data+name)
+                                 (let ((name (vtable-column-name column)))
+                                   (add-face-text-property
+                                    0 (length name)
+                                    (vtable-header-face table) t name)
+                                   (vtable--string-pixel-width name))
+                               0)))))
                       ;; Let min-width/max-width specs have their say.
                       (when-let* ((min-width (and (vtable-column-min-width column)
-                                                 (vtable--compute-width
-                                                  table (vtable-column-min-width column)))))
+                                                  (vtable--compute-width
+                                                   table (vtable-column-min-width column)))))
                         (setq width (max width min-width)))
                       (when-let* ((max-width (and (vtable-column-max-width column)
-                                                 (vtable--compute-width
-                                                  table (vtable-column-max-width column)))))
+                                                  (vtable--compute-width
+                                                   table (vtable-column-max-width column)))))
                         (setq width (min width max-width)))
                       width))
                   (vtable-columns table))))
@@ -898,7 +1022,7 @@ CACHE is TABLE's cache data as returned by `vtable--compute-cache'."
     ;; width evenly over them.
     (when (> n-0cols 0)
       (let* ((combined-width (apply #'+ widths))
-             (default-width (/ (- (window-width nil t) combined-width) n-0cols)))
+             (default-width (/ (- (window-body-width nil t) combined-width) n-0cols)))
         (setq widths (mapcar (lambda (width)
                                (if (zerop width)
                                    default-width
@@ -925,10 +1049,10 @@ CACHE is TABLE's cache data as returned by `vtable--compute-cache'."
        ;; We stash the computed width and string here -- if there are
        ;; no formatters/displayers, we'll be using the string, and
        ;; then won't have to recreate it.
-       (list value (string-pixel-width string) string)))
+       (list value (vtable--string-pixel-width string) string)))
    (vtable-columns table)))
 
-(defun vtable--make-keymap (table)
+(defun vtable--make-keymap (table use-nav-keymap)
   (let ((map (if (or (vtable-actions table)
                      (vtable-keymap table))
                  (copy-keymap vtable-map)
@@ -942,6 +1066,10 @@ CACHE is TABLE's cache data as returned by `vtable--compute-cache'."
                                  (funcall binding object))))
                  (car actions) (cadr actions))
         (setq actions (cddr actions))))
+
+    (when use-nav-keymap
+      (setq map (make-composed-keymap (list map vtable-nav-map))))
+
     (if (vtable-keymap table)
         (progn
           (setf (vtable-keymap table)
@@ -980,9 +1108,19 @@ CACHE is TABLE's cache data as returned by `vtable--compute-cache'."
   "<header-line> <mouse-1>" 'vtable-header-line-sort
   "<header-line> <mouse-2>" 'vtable-header-line-sort)
 
+(defvar-local vtable--display-line-numbers nil)
+
+(defun vtable--post-command ()
+  (unless (eq vtable--display-line-numbers display-line-numbers)
+    (setq vtable--display-line-numbers display-line-numbers)
+    (vtable-revert-command)))
+
 (define-minor-mode vtable-header-mode
   "Minor mode for buffers with vtables with headers."
-  :keymap vtable-header-mode-map)
+  :keymap vtable-header-mode-map
+  (if vtable-header-mode
+      (add-hook 'post-command-hook #'vtable--post-command nil 'local)
+    (remove-hook 'post-command-hook #'vtable--post-command 'local)))
 
 (defun vtable-narrow-current-column (&optional n)
   "Narrow the current column by N characters.
@@ -1074,6 +1212,41 @@ Interactively, N is the prefix argument."
 			  'vtable-column
 			  (car obj)))
       (vtable-sort-by-current-column))))
+
+(defun vtable-unsort ()
+  "Disable the current vtable sort.
+The default order is determined by the table's objects or
+:objects-function."
+  (interactive)
+  (let ((table (vtable-current-table)))
+    (unless table
+      (user-error "No table under point"))
+    (setf (vtable-sort-by table) nil)
+    (vtable-revert-command)))
+
+(defun vtable-next-line (n)
+  "Like `forward-line', but keeps point within table body bounds.
+N has the same meaning as in `forward-line', which see."
+  (interactive "p")
+  (when (save-excursion
+          (forward-line n)
+          (vtable-current-object))
+    (forward-line n)))
+
+(defun vtable-prev-line (n)
+  "Like `forward-line', but keeps point within table body bounds.
+N has the same meaning as a negative argument in `forward-line', which see."
+  (interactive "p")
+  (vtable-next-line (* -1 n)))
+
+(defun vtable-close ()
+  (interactive)
+  (when-let* ((table (vtable-current-table)))
+    (pcase (vtable-close-opt table)
+      ((pred (lambda (x) (when (functionp x) (funcall x) t))) t)
+      ('quit (quit-window))
+      ('quit-kill (quit-window 'kill))
+      (_ (bury-buffer)))))
 
 (provide 'vtable)
 
