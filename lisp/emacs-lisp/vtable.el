@@ -40,20 +40,20 @@
   :version "31.1"
   :group 'faces)
 
-(defface vtable-sort-ind-ascend
+(defface vtable-sort-indicator-ascend
   '((t :inherit vtable-header))
   "Face used (by default) for vtable ascend sort indicator."
   :version "31.1"
   :group 'faces)
 
-(defface vtable-sort-ind-descend
+(defface vtable-sort-indicator-descend
   '((t :inherit vtable-header))
   "Face used (by default) for vtable descend sort indicator."
   :version "31.1"
   :group 'faces)
 
-(defvar vtable-sort-ind-default '((?▼ ?v)
-                                  (?▲ ?^))
+(defvar vtable-sort-indicator-default '((?▼ ?v)
+                                        (?▲ ?^))
   "Default descending and ascending sort indicators.
 The form is a list of two conses of two characters.  The first set indicates
 sorting descending, the second ascending.  The first character in each cons
@@ -71,6 +71,7 @@ is for fonts that can display symbols, and the second is plain text.")
   getter
   formatter
   displayer
+  comparator
   -numerical
   -aligned)
 
@@ -85,23 +86,30 @@ is for fonts that can display symbols, and the second is plain text.")
    (use-header-line :initarg :use-header-line
                     :accessor vtable-use-header-line)
    (text-scale :initarg :text-scale :accessor vtable-text-scale)
-   (text-scale-header :initarg :text-scale-header :accessor vtable-text-scale-header)
+   (text-scale-header :initarg :text-scale-header
+                      :accessor vtable-text-scale-header)
+   (object-equal :initarg :object-equal
+                 :accessor vtable-object-equal :initform #'eq)
    (face :initarg :face :accessor vtable-face)
    (header-face :initarg :header-face :accessor vtable-header-face)
    (actions :initarg :actions :accessor vtable-actions)
    (keymap :initarg :keymap :accessor vtable-keymap)
    (separator-width :initarg :separator-width :accessor vtable-separator-width)
    (divider :initarg :divider :accessor vtable-divider :initform nil)
-   (divider-on-header :initarg :divider-on-header :accessor vtable-divider-on-header :initform nil)
+   (divider-on-header :initarg :divider-on-header
+                      :accessor vtable-divider-on-header :initform nil)
    (sort-by :initarg :sort-by :accessor vtable-sort-by)
-   (sort-ind :initarg :sort-ind :accessor vtable-sort-ind)
-   (sort-ind-face-ascend :initarg :sort-ind-face-ascend :accessor vtable-sort-ind-face-ascend)
-   (sort-ind-face-descend :initarg :sort-ind-face-descend :accessor vtable-sort-ind-face-descend)
+   (sort-indicator :initarg :sort-indicator :accessor vtable-sort-indicator)
+   (sort-indicator-face-ascend :initarg :sort-indicator-face-ascend
+                               :accessor vtable-sort-indicator-face-ascend)
+   (sort-indicator-face-descend :initarg :sort-indicator-face-descend
+                                :accessor vtable-sort-indicator-face-descend)
    (ellipsis :initarg :ellipsis :accessor vtable-ellipsis)
    (row-properties :initarg :row-properties :accessor vtable-row-properties)
    (column-colors :initarg :column-colors :accessor vtable-column-colors)
    (row-colors :initarg :row-colors :accessor vtable-row-colors)
-   (close-opt :initarg :close-opt :accessor vtable-close-opt)
+   (close-action :initarg :close-action :accessor vtable-close-action)
+   (-orig-sort-by :initform nil)
    (-cached-colors :initform nil)
    (-cache :initform (make-hash-table :test #'equal))
    (-cached-keymap :initform nil)
@@ -138,6 +146,7 @@ is for fonts that can display symbols, and the second is plain text.")
                             formatter
                             displayer
                             (use-header-line t)
+                            (object-equal #'eq)
                             (face 'vtable)
                             (header-face 'vtable-header)
                             actions keymap
@@ -148,9 +157,9 @@ is for fonts that can display symbols, and the second is plain text.")
                             (divider-on-header t)
                             divider-intangible
                             sort-by
-                            (sort-ind vtable-sort-ind-default)
-                            (sort-ind-face-ascend 'vtable-sort-ind-ascend)
-                            (sort-ind-face-descend 'vtable-sort-ind-descend)
+                            (sort-indicator vtable-sort-indicator-default)
+                            (sort-indicator-face-ascend 'vtable-sort-indicator-ascend)
+                            (sort-indicator-face-descend 'vtable-sort-indicator-descend)
                             (ellipsis t)
                             (insert t)
                             row-properties
@@ -158,7 +167,7 @@ is for fonts that can display symbols, and the second is plain text.")
                             column-colors
                             text-scale
                             text-scale-header
-                            close-opt)
+                            close-action)
   "Create and insert a vtable at point.
 The vtable object is returned.  If INSERT is nil, the table won't
 be inserted.
@@ -179,6 +188,7 @@ See info node `(vtable)Top' for vtable documentation."
           :use-header-line use-header-line
           :text-scale text-scale
           :text-scale-header text-scale-header
+          :object-equal object-equal
           :face face
           :header-face header-face
           :actions actions
@@ -186,14 +196,14 @@ See info node `(vtable)Top' for vtable documentation."
           :separator-width separator-width
           :divider-on-header divider-on-header
           :sort-by sort-by
-          :sort-ind sort-ind
-          :sort-ind-face-ascend sort-ind-face-ascend
-          :sort-ind-face-descend sort-ind-face-descend
+          :sort-indicator sort-indicator
+          :sort-indicator-face-ascend sort-indicator-face-ascend
+          :sort-indicator-face-descend sort-indicator-face-descend
           :row-properties row-properties
           :row-colors row-colors
           :column-colors column-colors
           :ellipsis ellipsis
-          :close-opt close-opt)))
+          :close-action close-action)))
     ;; Store whether the user has specified columns or not.
     (setf (slot-value table '-has-column-spec) (not (not columns)))
     ;; Auto-generate the columns.
@@ -245,7 +255,8 @@ See info node `(vtable)Top' for vtable documentation."
           (cursor-intangible-mode))))
     ;; Compute the keymap.
     (setf (slot-value table '-cached-keymap) (vtable--make-keymap table use-nav-keymap))
-    (unless sort-by
+    (if sort-by
+        (setf (slot-value table '-orig-sort-by) sort-by)
       (seq-do-indexed (lambda (column index)
                         (when (vtable-column-primary column)
                           (push (cons index (vtable-column-primary column))
@@ -334,14 +345,15 @@ See info node `(vtable)Top' for vtable documentation."
 Return the position of the object if found, and nil if not."
   (let ((start (point)))
     (vtable-beginning-of-table)
-    (save-restriction
-      (narrow-to-region (point) (save-excursion (vtable-end-of-table)))
-      (if (text-property-search-forward 'vtable-object object #'eq)
-          (progn
-            (forward-line -1)
-            (point))
-        (goto-char start)
-        nil))))
+    (let ((predicate (vtable-object-equal (vtable-current-table))))
+      (save-restriction
+        (narrow-to-region (point) (save-excursion (vtable-end-of-table)))
+        (if (text-property-search-forward 'vtable-object object predicate)
+            (progn
+              (forward-line -1)
+              (point))
+          (goto-char start)
+          nil)))))
 
 (defun vtable-goto-table (table)
   "Go to TABLE in the current buffer.
@@ -757,28 +769,36 @@ recompute the column specs when the table data has changed."
 
 (defun vtable--sort (table)
   (pcase-dolist (`(,index . ,direction) (vtable-sort-by table))
-    (let ((cache (vtable--cache table))
-          (numerical (vtable-column--numerical
-                      (elt (vtable-columns table) index)))
-          (numcomp (if (eq direction 'descend)
-                       #'> #'<))
-          (stringcomp (if (eq direction 'descend)
-                          #'string> #'string<)))
+    (let* ((cache (vtable--cache table))
+           (column (elt (vtable-columns table) index))
+           (numerical (vtable-column--numerical column))
+           (numcomp (if (eq direction 'descend)
+                        #'> #'<))
+           (stringcomp (if (eq direction 'descend)
+                           #'string> #'string<))
+           (comparator (vtable-column-comparator column))
+           (comparator-func (when comparator
+                              (if (eq direction 'descend)
+                                  (lambda (v1 v2)
+                                    (funcall comparator v2 v1))
+                                comparator))))
       (setcar cache
               (sort (car cache)
                     (lambda (e1 e2)
                       (let ((c1 (elt e1 (1+ index)))
                             (c2 (elt e2 (1+ index))))
-                        (if numerical
-                            (funcall numcomp (car c1) (car c2))
-                          (funcall
-                           stringcomp
-                           (if (stringp (car c1))
-                               (car c1)
-                             (format "%s" (car c1)))
-                           (if (stringp (car c2))
-                               (car c2)
-                             (format "%s" (car c2))))))))))))
+                        (if comparator-func
+                            (funcall comparator-func (car c1) (car c2))
+                          (if numerical
+                              (funcall numcomp (car c1) (car c2))
+                            (funcall
+                             stringcomp
+                             (if (stringp (car c1))
+                                 (car c1)
+                               (format "%s" (car c1)))
+                             (if (stringp (car c2))
+                                 (car c2)
+                               (format "%s" (car c2)))))))))))))
 
 (defun vtable--indicator (table index)
   (let ((order (car (last (vtable-sort-by table)))))
@@ -787,7 +807,7 @@ recompute the column specs when the table data has changed."
                (n (if (eq dir 'ascend) 1 0)))
           ;; We're sorting by this column last, so return an indicator.
           (catch 'found
-            (dolist (candidate (nth n (vtable-sort-ind table)))
+            (dolist (candidate (nth n (vtable-sort-indicator table)))
               (when (char-displayable-p candidate)
                 (throw 'found (cons (string candidate) dir))))
             (cons "" nil))))))
@@ -820,8 +840,8 @@ recompute the column specs when the table data has changed."
               (indicator (propertize
                           (concat " " (car indicator+dir) " ")
                           'face (if (eq (cdr indicator+dir) 'ascend)
-                                    (vtable-sort-ind-face-ascend table)
-                                  (vtable-sort-ind-face-descend table))
+                                    (vtable-sort-indicator-face-ascend table)
+                                  (vtable-sort-indicator-face-descend table))
                           'display '(space-width 0.5)))
               (indicator-width (vtable--string-pixel-width indicator))
               ;; Don't insert the separator or divider after the final column.
@@ -1214,14 +1234,21 @@ Interactively, N is the prefix argument."
       (vtable-sort-by-current-column))))
 
 (defun vtable-unsort ()
-  "Disable the current vtable sort.
+  "Disable vtable sort, or toggle disabled and the original `:sort-by'.
 The default order is determined by the table's objects or
-:objects-function."
+`:objects-function'."
   (interactive)
   (let ((table (vtable-current-table)))
     (unless table
       (user-error "No table under point"))
-    (setf (vtable-sort-by table) nil)
+    (cond
+     ((null (vtable-sort-by table))
+      (when (slot-value table '-orig-sort-by)
+        (message "Original sort order")
+        (setf (vtable-sort-by table) (slot-value table '-orig-sort-by))))
+     (t
+      (message "Sort disabled")
+      (setf (vtable-sort-by table) nil)))
     (vtable-revert-command)))
 
 (defun vtable-next-line (n)
@@ -1242,10 +1269,10 @@ N has the same meaning as a negative argument in `forward-line', which see."
 (defun vtable-close ()
   (interactive)
   (when-let* ((table (vtable-current-table)))
-    (pcase (vtable-close-opt table)
+    (pcase (vtable-close-action table)
       ((pred (lambda (x) (when (functionp x) (funcall x) t))) t)
-      ('quit (quit-window))
-      ('quit-kill (quit-window 'kill))
+      ('quit-window (quit-window))
+      ('quit-window-kill (quit-window 'kill))
       (_ (bury-buffer)))))
 
 (provide 'vtable)
