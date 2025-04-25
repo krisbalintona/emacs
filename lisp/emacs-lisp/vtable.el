@@ -72,6 +72,7 @@ is for fonts that can display symbols, and the second is plain text.")
   infer-width ; nil or 'data uses data, 'data+name includes column name
   min-width
   max-width
+  truncate-guess-tolerance
   primary
   align
   getter
@@ -383,6 +384,39 @@ If it can't be found, return nil and don't move point."
       (goto-char (prop-match-beginning match))
     (end-of-line)))
 
+(defun vtable-beginning-of-table-line-number ()
+  "Absolute buffer line number of the start of the current table."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (line-number-at-pos (vtable-beginning-of-table)))))
+
+(defun vtable-end-of-table-line-number ()
+  "Absolute buffer line number of the end of the current table."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (line-number-at-pos (vtable-end-of-table)))))
+
+(defun vtable-object-line-number (object)
+  "Absolute buffer line number of OBJECT or nil, if it is not in the table."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (when (vtable-goto-object object)
+        (line-number-at-pos)))))
+
+(defun vtable-object-line-index (object)
+  "Line number of OBJECT or nil, if it is not in the table.
+The index is OBJECT's line number relative to the start of the table.
+It is 0-based."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (when (vtable-goto-object object)
+        (- (line-number-at-pos)
+           (vtable-beginning-of-table-line-number))))))
+
 (defun vtable-update-object (table object &optional old-object)
   "Update OBJECT's representation in TABLE.
 If OLD-OBJECT is non-nil, replace OLD-OBJECT with OBJECT and display it.
@@ -548,6 +582,9 @@ This also updates the displayed table."
         ;; all-numerical table, so recompute.
         (vtable--recompute-numerical table (cdr line))))))
 
+(defun vtable-marked-objects (table)
+  (slot-value table '-marked-objects))
+
 (defun vtable-object-marked-p (table object)
   (seq-contains-p (slot-value table '-marked-objects)
                   object
@@ -568,20 +605,27 @@ This also updates the displayed table."
                                  (slot-value table '-marked-objects))))
     (unless (eq (length removed-seq)
                 (length (slot-value table '-marked-objects)))
-      (setf (slot-value table '-marked-objects) removed-seq))))
+      (setf (slot-value table '-marked-objects) removed-seq)
+      t)))
 
 (defun vtable-unmark-object (table object)
   (vtable--unmark-object table object)
   (vtable-revert))
 
-(defun vtable-marked-objects (table)
-  (slot-value table '-marked-objects))
+(defun vtable--toggle-marked-object (table object)
+  (if (vtable-object-marked-p table object)
+      (vtable--unmark-object table object)
+    (vtable--mark-object table object)))
 
-(defun vtable-mark-objects (table pred)
+(defun vtable-toggle-marked-object (table object)
+  (when (vtable--toggle-marked-object table object)
+    (vtable-revert)))
+
+(defun vtable-mark-objects (table predicate)
   (let (refresh)
     (dolist (line (car (vtable--ensure-cache table)))
       (let ((object (car line)))
-        (when (funcall pred object)
+        (when (funcall predicate object)
           (setq refresh t)
           (vtable--mark-object table object))))
     (when refresh
@@ -590,11 +634,11 @@ This also updates the displayed table."
 (defun vtable-mark-all-objects (table)
   (vtable-mark-objects table #'identity))
 
-(defun vtable-unmark-objects (table pred)
+(defun vtable-unmark-objects (table predicate)
   (let (refresh)
     (dolist (line (car (vtable--ensure-cache table)))
       (let ((object (car line)))
-        (when (funcall pred object)
+        (when (funcall predicate object)
           (setq refresh t)
           (vtable--unmark-object table object))))
     (when refresh
@@ -669,9 +713,6 @@ recompute the column specs when the table data has changed."
 (defun vtable--spacer (table)
   (vtable--compute-width table (vtable-separator-width table)))
 
-;; FIXME: The line cache needs to be computed with regard to column
-;; formatters to correctly compute formatted widths, and fall back on
-;; raw values on columns without formatters.
 (defun vtable--recompute-cache (table)
   (let* ((data (vtable--compute-cache table))
          (widths (vtable--compute-widths table data)))
@@ -743,13 +784,15 @@ recompute the column specs when the table data has changed."
            (setq value (funcall (vtable-formatter table)
                                 value index table)
                  pre-computed nil)))
-         (let* (;; Make ellipsis properties match the final character of value.
-                (ellipsis+ (copy-sequence ellipsis))
-                (_ (add-text-properties
-                    0 (length ellipsis+)
-                    (text-properties-at (1- (length (or pre-computed value)))
-                                        (or pre-computed value))
-                    ellipsis+))
+         (let* ((ellipsis+ (copy-sequence ellipsis))
+                ;; Make ellipsis properties match the final character of value.
+                (x (length (or pre-computed value)))
+                (_ (when (> x 0)
+                     (add-text-properties
+                      0 (length ellipsis+)
+                      (text-properties-at (1- x)
+                                          (or pre-computed value))
+                      ellipsis+)))
                 (ellipsis-width (vtable--string-pixel-width ellipsis+))
                 (displayed
                  ;; Allow any displayers to have their say.
@@ -767,7 +810,8 @@ recompute the column specs when the table data has changed."
                        (concat
                         (vtable--limit-string
                          pre-computed (- column-width
-                                         (or ellipsis-width 0)))
+                                         (or ellipsis-width 0))
+                         (vtable-column-truncate-guess-tolerance column))
                         ellipsis+)
                      pre-computed))
                   ;; Recompute widths.
@@ -776,7 +820,8 @@ recompute the column specs when the table data has changed."
                        (concat
                         (vtable--limit-string
                          value (- column-width
-                                  (or ellipsis-width 0)))
+                                  (or ellipsis-width 0))
+                         (vtable-column-truncate-guess-tolerance column))
                         ellipsis+)
                      value))))
                 (start (point))
@@ -887,7 +932,7 @@ recompute the column specs when the table data has changed."
   ;; Insert the header directly into the buffer.
   (let* ((start (point))
          (divider (vtable-divider table))
-         (divider-px (vtable--string-pixel-width divider))
+         (divider-pixels (vtable--string-pixel-width divider))
          (divider-on-header (vtable-divider-on-header table))
          (cmap (define-keymap
                  "<header-line> <drag-mouse-1>" #'vtable--drag-resize-column
@@ -926,7 +971,8 @@ recompute the column specs when the table data has changed."
                  (if (> (vtable--string-pixel-width name)
                         (- (+ column-width spacer) indicator-width))
                      (vtable--limit-string
-                      name (- (+ column-width spacer) indicator-width))
+                      name (- (+ column-width spacer) indicator-width)
+                      (vtable-column-truncate-guess-tolerance column))
                    name))
                 (fill-width
                  (+ (- column-width
@@ -977,7 +1023,7 @@ recompute the column specs when the table data has changed."
            (if divider-on-header
                (insert (propertize divider 'keymap dmap))
              (insert (propertize " " 'display
-                                 (list 'space :width (list divider-px))))))
+                                 (list 'space :width (list divider-pixels))))))
          (put-text-property start (point) 'vtable-column index)))
      (vtable-columns table))
     (insert "\n")
@@ -1054,21 +1100,47 @@ If NEXT, do the next column."
     (setq text-scale-remap-header-line t))
   (vtable-header-mode))
 
-(defun vtable--limit-string (string pixels)
+(defun vtable--limit-string (string pixels &optional truncate-guess-tolerance)
+  "Truncate STRING to fit into width PIXELS.
+This function tries to guess STRING's truncated length, in characters,
+based the pixel width of its first character, including its text
+properties, relative to PIXELS.
+
+If TRUNCATE-GUESS-TOLERANCE is nil, then no guessing is done.
+
+If TRUNCATE-GUESS-TOLERANCE is an integer, it is the number of additional
+characters to add to the guess.  Start with 0 characters and increase the
+tolerance if you find that the guess is too small and cuts off too many
+characters the string."
+  (when (and (integerp truncate-guess-tolerance)
+             (length> string 0)
+             (> (vtable--string-pixel-width string) pixels))
+    ;; We use the first character of STRING as a reference to guess
+    ;; the pixel width of all of its characters, which may be different
+    ;; from the average buffer character width.
+    (setq string (substring
+                  string 0
+                  (+ truncate-guess-tolerance
+                     (ceiling (/ pixels
+                                 (vtable--string-pixel-width
+                                  (substring string 0 1))))))))
   (while (and (length> string 0)
               (> (vtable--string-pixel-width string) pixels))
     (setq string (substring string 0 (1- (length string)))))
   string)
 
-(defun vtable--text-scale-pixels (px)
+(defsubst vtable--text-scale-pixels (pixels)
   ;; Adjust pixels for text-scaled buffers
-  (ceiling (* px (/ (float (default-font-width)) (frame-char-width)))))
+  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
 
-(defun vtable--string-pixel-width (str)
+;; NOTE: The alternative to `vtable--text-scale-pixels' would be to
+;; record the vtable buffer and use that as a reference buffer for
+;; `string-pixel-width'.
+(defsubst vtable--string-pixel-width (str)
   ;; Adjust pixel-width for text-scaled buffers
   (vtable--text-scale-pixels (string-pixel-width str)))
 
-(defun vtable--char-width (table)
+(defsubst vtable--char-width (table)
   (vtable--string-pixel-width
    (propertize "x" 'face (vtable-face table))))
 
@@ -1148,9 +1220,16 @@ CACHE is TABLE's cache data as returned by `vtable--compute-cache'."
   (seq-map-indexed
    (lambda (column index)
      (let* ((value (vtable--get-value object index column table))
-            (string (if (stringp value)
-                        (copy-sequence value)
-                      (format "%s" value))))
+            (string
+             (cond
+              ((vtable-column-formatter column)
+               (funcall (vtable-column-formatter column) value))
+              ((vtable-formatter table)
+               (funcall (vtable-formatter table) value index table))
+              (t
+               (if (stringp value)
+                   (copy-sequence value)
+                 (format "%s" value))))))
        (add-face-text-property 0 (length string)
                                (vtable-face table)
                                t string)
