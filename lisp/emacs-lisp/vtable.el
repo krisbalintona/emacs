@@ -150,6 +150,23 @@ is for fonts that can display symbols, and the second is plain text.")
   "S-<tab>" #'vtable-prev-line
   "q"       #'vtable-close)
 
+;; Define inline functions early.
+
+(defsubst vtable--text-scale-pixels (pixels)
+  ;; Adjust pixels for text-scaled buffers
+  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
+
+;; NOTE: The alternative to `vtable--text-scale-pixels' would be to
+;; record the vtable buffer and use that as a reference buffer for
+;; `string-pixel-width'.
+(defsubst vtable--string-pixel-width (str)
+  ;; Adjust pixel-width for text-scaled buffers
+  (vtable--text-scale-pixels (string-pixel-width str)))
+
+(defsubst vtable--char-width (table)
+  (vtable--string-pixel-width
+   (propertize "x" 'face (vtable-face table))))
+
 (cl-defun make-vtable (&key columns objects objects-function
                             getter
                             formatter
@@ -224,16 +241,25 @@ See info node `(vtable)Top' for vtable documentation."
       (setq columns (make-list (length (car objects)) "")))
     (setf (vtable-columns table)
           (mapcar (lambda (column)
-                    (cond
-                     ;; We just have the name (as a string).
-                     ((stringp column)
-                      (make-vtable-column :name column))
-                     ;; A plist of keywords/values.
-                     ((listp column)
-                      (apply #'make-vtable-column column))
-                     ;; A full `vtable-column' object.
-                     (t
-                      column)))
+                    (let ((new-col
+                           (cond
+                            ;; We just have the name (as a string).
+                            ((stringp column)
+                             (make-vtable-column :name column))
+                            ;; A plist of keywords/values.
+                            ((listp column)
+                             (apply #'make-vtable-column column))
+                            ;; A full `vtable-column' object.
+                            (t
+                             column))))
+                      (let ((truncate-guess-tolerance
+                             (vtable-column-truncate-guess-tolerance new-col)))
+                        (unless (or (and (integerp truncate-guess-tolerance)
+                                         (> truncate-guess-tolerance -1))
+                                    (null truncate-guess-tolerance))
+                          (error "column `%s' truncate-guess-tolerance must be nil or >= 0"
+                                 (vtable-column-name new-col))))
+                      new-col))
                   columns))
     ;; Compute missing column data.
     (setf (vtable-columns table) (vtable--compute-columns table))
@@ -1109,8 +1135,8 @@ properties, relative to PIXELS.
 If TRUNCATE-GUESS-TOLERANCE is nil, then no guessing is done.
 
 If TRUNCATE-GUESS-TOLERANCE is an integer, it is the number of additional
-characters to add to the guess.  Start with 0 characters and increase the
-tolerance if you find that the guess is too small and cuts off too many
+characters to add to the guess.  Start with 0 and increase the tolerance
+if you find that the guess is too small and cuts off too many
 characters the string."
   (when (and (integerp truncate-guess-tolerance)
              (length> string 0)
@@ -1120,29 +1146,15 @@ characters the string."
     ;; from the average buffer character width.
     (setq string (substring
                   string 0
-                  (+ truncate-guess-tolerance
-                     (ceiling (/ pixels
-                                 (vtable--string-pixel-width
-                                  (substring string 0 1))))))))
+                  (min (length string)
+                       (+ truncate-guess-tolerance
+                          (ceiling (/ pixels
+                                      (vtable--string-pixel-width
+                                       (substring string 0 1)))))))))
   (while (and (length> string 0)
               (> (vtable--string-pixel-width string) pixels))
     (setq string (substring string 0 (1- (length string)))))
   string)
-
-(defsubst vtable--text-scale-pixels (pixels)
-  ;; Adjust pixels for text-scaled buffers
-  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
-
-;; NOTE: The alternative to `vtable--text-scale-pixels' would be to
-;; record the vtable buffer and use that as a reference buffer for
-;; `string-pixel-width'.
-(defsubst vtable--string-pixel-width (str)
-  ;; Adjust pixel-width for text-scaled buffers
-  (vtable--text-scale-pixels (string-pixel-width str)))
-
-(defsubst vtable--char-width (table)
-  (vtable--string-pixel-width
-   (propertize "x" 'face (vtable-face table))))
 
 (defun vtable--compute-width (table spec)
   (cond
