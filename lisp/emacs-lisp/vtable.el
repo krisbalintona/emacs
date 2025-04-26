@@ -1138,23 +1138,23 @@ If TRUNCATE-GUESS-TOLERANCE is an integer, it is the number of additional
 characters to add to the guess.  Start with 0 and increase the tolerance
 if you find that the guess is too small and cuts off too many
 characters the string."
-  (when (and (integerp truncate-guess-tolerance)
-             (length> string 0)
-             (> (vtable--string-pixel-width string) pixels))
-    ;; We use the first character of STRING as a reference to guess
-    ;; the pixel width of all of its characters, which may be different
-    ;; from the average buffer character width.
-    (setq string (substring
-                  string 0
-                  (min (length string)
-                       (+ truncate-guess-tolerance
-                          (ceiling (/ pixels
-                                      (vtable--string-pixel-width
-                                       (substring string 0 1)))))))))
-  (while (and (length> string 0)
-              (> (vtable--string-pixel-width string) pixels))
-    (setq string (substring string 0 (1- (length string)))))
-  string)
+  (let ((string-len (length string)))
+    (when (and (integerp truncate-guess-tolerance)
+               (> string-len 0)
+               (> (vtable--string-pixel-width string) pixels))
+      ;; We use the first character of STRING as a reference to guess
+      ;; the pixel width of all of its characters, which may be different
+      ;; from the average buffer character width.
+      (let ((guess (+ truncate-guess-tolerance
+                      (ceiling (/ pixels
+                                  (vtable--string-pixel-width
+                                   (substring string 0 1)))))))
+        (when (< guess string-len)
+          (setq string (substring string 0 guess)))))
+    (while (and (length> string 0)
+                (> (vtable--string-pixel-width string) pixels))
+      (setq string (substring string 0 (1- (length string)))))
+    string))
 
 (defun vtable--compute-width (table spec)
   (cond
