@@ -456,13 +456,13 @@ is signaled."
   (let* ((objects (vtable-objects table))
          (inhibit-read-only t))
     ;; First replace the object in the object storage.
-    (if (eq old-object (car objects))
+    (if (funcall (vtable-object-equal table) old-object (car objects))
         ;; It's at the head, so replace it there.
         (setf (vtable-objects table)
               (cons object (cdr objects)))
       ;; Otherwise splice into the list.
       (while (and (cdr objects)
-                  (not (eq (cadr objects) old-object)))
+                  (not (funcall (vtable-object-equal table) (cadr objects) old-object)))
         (setq objects (cdr objects)))
       (unless objects
         (error "Can't find the old object"))
@@ -607,72 +607,6 @@ This also updates the displayed table."
         ;; We may have inserted a non-numerical value into a previously
         ;; all-numerical table, so recompute.
         (vtable--recompute-numerical table (cdr line))))))
-
-(defun vtable-marked-objects (table)
-  (slot-value table '-marked-objects))
-
-(defun vtable-object-marked-p (table object)
-  (seq-contains-p (slot-value table '-marked-objects)
-                  object
-                  (vtable-object-equal table)))
-
-(defun vtable--mark-object (table object)
-  (unless (vtable-object-marked-p table object)
-    (push object (slot-value table '-marked-objects))))
-
-(defun vtable-mark-object (table object)
-  (when (vtable--mark-object table object)
-    (vtable-revert)))
-
-(defun vtable--unmark-object (table object)
-  (let ((removed-seq (seq-remove (lambda (elt)
-                                   (funcall (vtable-object-equal table)
-                                            elt object))
-                                 (slot-value table '-marked-objects))))
-    (unless (eq (length removed-seq)
-                (length (slot-value table '-marked-objects)))
-      (setf (slot-value table '-marked-objects) removed-seq)
-      t)))
-
-(defun vtable-unmark-object (table object)
-  (vtable--unmark-object table object)
-  (vtable-revert))
-
-(defun vtable--toggle-marked-object (table object)
-  (if (vtable-object-marked-p table object)
-      (vtable--unmark-object table object)
-    (vtable--mark-object table object)))
-
-(defun vtable-toggle-marked-object (table object)
-  (when (vtable--toggle-marked-object table object)
-    (vtable-revert)))
-
-(defun vtable-mark-objects (table predicate)
-  (let (refresh)
-    (dolist (line (car (vtable--ensure-cache table)))
-      (let ((object (car line)))
-        (when (funcall predicate object)
-          (setq refresh t)
-          (vtable--mark-object table object))))
-    (when refresh
-      (vtable-revert))))
-
-(defun vtable-mark-all-objects (table)
-  (vtable-mark-objects table #'identity))
-
-(defun vtable-unmark-objects (table predicate)
-  (let (refresh)
-    (dolist (line (car (vtable--ensure-cache table)))
-      (let ((object (car line)))
-        (when (funcall predicate object)
-          (setq refresh t)
-          (vtable--unmark-object table object))))
-    (when refresh
-      (vtable-revert))))
-
-(defun vtable-unmark-all-objects (table)
-  (vtable-unmark-objects table #'identity)
-  (vtable-revert))
 
 (defun vtable-column (table index)
   "Return the name of the INDEXth column in TABLE."
@@ -1457,6 +1391,63 @@ N has the same meaning as a negative argument in `forward-line', which see."
       ('quit-window (quit-window))
       ('quit-window-kill (quit-window 'kill))
       (_ (bury-buffer)))))
+
+;; Object marking functions.
+
+(defun vtable-marked-objects (table)
+  (slot-value table '-marked-objects))
+
+(defun vtable-object-marked-p (table object)
+  (seq-contains-p (slot-value table '-marked-objects)
+                  object
+                  (vtable-object-equal table)))
+
+(defun vtable--mark-object (table object)
+  (unless (vtable-object-marked-p table object)
+    (push object (slot-value table '-marked-objects))
+    (vtable-update-object table object)))
+
+(defun vtable-mark-object (object)
+  (vtable--mark-object (vtable-current-table) object)
+  (vtable-next-line 1))
+
+(defun vtable--unmark-object (table object)
+  (let ((removed-seq (seq-remove (lambda (elt)
+                                   (funcall (vtable-object-equal table)
+                                            elt object))
+                                 (slot-value table '-marked-objects))))
+    (unless (eq (length removed-seq)
+                (length (slot-value table '-marked-objects)))
+      (setf (slot-value table '-marked-objects) removed-seq)
+      (vtable-update-object table object))))
+
+(defun vtable-unmark-object (object)
+  (vtable--unmark-object (vtable-current-table) object)
+  (vtable-next-line 1))
+
+(defun vtable-toggle-marked-object (object)
+  (let ((table (vtable-current-table)))
+    (if (vtable-object-marked-p table object)
+        (vtable--unmark-object table object)
+      (vtable--mark-object table object))))
+
+(defun vtable-mark-objects (table predicate)
+  (dolist (line (car (vtable--ensure-cache table)))
+    (let ((object (car line)))
+      (when (funcall predicate object)
+        (vtable--mark-object table object)))))
+
+(defun vtable-mark-all-objects ()
+  (vtable-mark-objects (vtable-current-table) #'identity))
+
+(defun vtable-unmark-objects (table predicate)
+  (dolist (line (car (vtable--ensure-cache table)))
+    (let ((object (car line)))
+      (when (funcall predicate object)
+        (vtable--unmark-object table object)))))
+
+(defun vtable-unmark-all-objects ()
+  (vtable-unmark-objects (vtable-current-table) #'identity))
 
 (provide 'vtable)
 
