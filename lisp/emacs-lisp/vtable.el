@@ -117,6 +117,7 @@ is for fonts that can display symbols, and the second is plain text.")
    (column-colors :initarg :column-colors :accessor vtable-column-colors)
    (row-colors :initarg :row-colors :accessor vtable-row-colors)
    (close-action :initarg :close-action :accessor vtable-close-action)
+   (extra-data :initarg :extra-data :accessor vtable-extra-data)
    (-marked-objects :initform nil)
    (-orig-sort-by :initform nil)
    (-cached-colors :initform nil)
@@ -194,7 +195,8 @@ is for fonts that can display symbols, and the second is plain text.")
                             column-colors
                             text-scale
                             text-scale-header
-                            close-action)
+                            close-action
+                            extra-data)
   "Create and insert a vtable at point.
 The vtable object is returned.  If INSERT is nil, the table won't
 be inserted.
@@ -231,7 +233,8 @@ See info node `(vtable)Top' for vtable documentation."
           :row-colors row-colors
           :column-colors column-colors
           :ellipsis ellipsis
-          :close-action close-action)))
+          :close-action close-action
+          :extra-data extra-data)))
     ;; Store whether the user has specified columns or not.
     (setf (slot-value table '-has-column-spec) (not (not columns)))
     ;; Auto-generate the columns.
