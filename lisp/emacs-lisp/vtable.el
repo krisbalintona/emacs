@@ -1407,9 +1407,10 @@ N has the same meaning as a negative argument in `forward-line', which see."
     (push object (slot-value table '-marked-objects))
     (vtable-update-object table object)))
 
-(defun vtable-mark-object (object)
+(defun vtable-mark-object (object &optional inhibit-next-line)
   (vtable--mark-object (vtable-current-table) object)
-  (vtable-next-line 1))
+  (unless inhibit-next-line
+    (vtable-next-line 1)))
 
 (defun vtable--unmark-object (table object)
   (let ((removed-seq (seq-remove (lambda (elt)
@@ -1421,9 +1422,10 @@ N has the same meaning as a negative argument in `forward-line', which see."
       (setf (slot-value table '-marked-objects) removed-seq)
       (vtable-update-object table object))))
 
-(defun vtable-unmark-object (object)
+(defun vtable-unmark-object (object &optional inhibit-next-line)
   (vtable--unmark-object (vtable-current-table) object)
-  (vtable-next-line 1))
+  (unless inhibit-next-line
+    (vtable-next-line 1)))
 
 (defun vtable-toggle-marked-object (object)
   (let ((table (vtable-current-table)))
@@ -1437,7 +1439,7 @@ N has the same meaning as a negative argument in `forward-line', which see."
       (when (funcall predicate object)
         (vtable--mark-object table object)))))
 
-(defun vtable-mark-all-objects ()
+(defun vtable-mark-all-objects (&rest _)
   (vtable-mark-objects (vtable-current-table) #'identity))
 
 (defun vtable-unmark-objects (table predicate)
@@ -1446,7 +1448,7 @@ N has the same meaning as a negative argument in `forward-line', which see."
       (when (funcall predicate object)
         (vtable--unmark-object table object)))))
 
-(defun vtable-unmark-all-objects ()
+(defun vtable-unmark-all-objects (&rest _)
   (vtable-unmark-objects (vtable-current-table) #'identity))
 
 (provide 'vtable)
