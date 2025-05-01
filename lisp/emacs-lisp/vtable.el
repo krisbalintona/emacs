@@ -615,6 +615,9 @@ This also updates the displayed table."
   "Return the name of the INDEXth column in TABLE."
   (vtable-column-name (elt (vtable-columns table) index)))
 
+(defun vtable-set-extra-data (table extra-data)
+  (setf (vtable-extra-data table) extra-data))
+
 ;;; Generating the table.
 
 (defun vtable--get-value (object index column table)
