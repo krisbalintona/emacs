@@ -116,10 +116,13 @@ is for fonts that can display symbols, and the second is plain text.")
    (row-properties :initarg :row-properties :accessor vtable-row-properties)
    (column-colors :initarg :column-colors :accessor vtable-column-colors)
    (row-colors :initarg :row-colors :accessor vtable-row-colors)
-   (column-color-function :initarg :column-color-function :accessor vtable-column-color-function)
-   (row-color-function :initarg :row-color-function :accessor vtable-row-color-function)
+   (column-color-function :initarg :column-color-function
+                          :accessor vtable-column-color-function)
+   (row-color-function :initarg :row-color-function
+                       :accessor vtable-row-color-function)
    (close-action :initarg :close-action :accessor vtable-close-action)
    (extra-data :initarg :extra-data :accessor vtable-extra-data)
+   (-objects-epoch :initform 0)
    (-marked-objects :initform nil)
    (-orig-sort-by :initform nil)
    (-cached-colors :initform nil)
@@ -147,28 +150,13 @@ is for fonts that can display symbols, and the second is plain text.")
   "C-n"     #'vtable-next-line
   "<down>"  #'vtable-next-line
   "<tab>"   #'vtable-next-line
-  "p"       #'vtable-prev-line
-  "C-p"     #'vtable-prev-line
-  "<up>"    #'vtable-prev-line
-  "S-<tab>" #'vtable-prev-line
+  "p"       #'vtable-previous-line
+  "C-p"     #'vtable-previous-line
+  "<up>"    #'vtable-previous-line
+  "S-<tab>" #'vtable-previous-line
+  "<home>"  #'vtable-goto-beginning-of-table
+  "<end>"   #'vtable-goto-end-of-table
   "q"       #'vtable-close)
-
-;; Define inline functions early.
-
-(defsubst vtable--text-scale-pixels (pixels)
-  ;; Adjust pixels for text-scaled buffers
-  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
-
-;; NOTE: The alternative to `vtable--text-scale-pixels' would be to
-;; record the vtable buffer and use that as a reference buffer for
-;; `string-pixel-width'.
-(defsubst vtable--string-pixel-width (str)
-  ;; Adjust pixel-width for text-scaled buffers
-  (vtable--text-scale-pixels (string-pixel-width str)))
-
-(defsubst vtable--char-width (table)
-  (vtable--string-pixel-width
-   (propertize "x" 'face (vtable-face table))))
 
 (cl-defun make-vtable (&key columns objects objects-function
                             getter
@@ -266,8 +254,9 @@ See info node `(vtable)Top' for vtable documentation."
                         (unless (or (and (integerp truncate-guess-tolerance)
                                          (> truncate-guess-tolerance -1))
                                     (null truncate-guess-tolerance))
-                          (error "column `%s' truncate-guess-tolerance must be nil or >= 0"
-                                 (vtable-column-name new-col))))
+                          (error
+                           "column `%s' truncate-guess-tolerance must be nil or >= 0"
+                           (vtable-column-name new-col))))
                       new-col))
                   columns))
     ;; Compute missing column data.
@@ -300,7 +289,8 @@ See info node `(vtable)Top' for vtable documentation."
         (when divider-intangible
           (cursor-intangible-mode))))
     ;; Compute the keymap.
-    (setf (slot-value table '-cached-keymap) (vtable--make-keymap table use-navigation-keymap))
+    (setf (slot-value table '-cached-keymap)
+          (vtable--make-keymap table use-navigation-keymap))
     (if sort-by
         (setf (slot-value table '-orig-sort-by) sort-by)
       (seq-do-indexed (lambda (column index)
@@ -374,17 +364,47 @@ See info node `(vtable)Top' for vtable documentation."
   (get-text-property (point) 'vtable-column))
 
 (defun vtable-beginning-of-table ()
-  "Go to the start of the current table."
+  "Move point to the first row of the current table.
+If the table is empty and if `use-header' is nil, point will be moved to
+the header.
+
+If no table is found, point is moved to the start of the buffer."
   (if (or (text-property-search-backward 'vtable (vtable-current-table) #'eq)
           (get-text-property (point) 'vtable))
-      (point)
+      ;; Accommodate header in buffer vs. header-line.  Attempt to move
+      ;; point into the first object's line.
+      (progn
+        (when (get-text-property (point) 'vtable-header)
+          (forward-line)
+          (unless (vtable-current-object)
+            (forward-line -1)))
+        (point))
     (goto-char (point-min))))
 
+(defun vtable-goto-beginning-of-table ()
+  "Move point to the first row of the current table.
+If the table is empty and if `use-header' is nil, point will be moved to
+the header."
+  (interactive)
+  (vtable-beginning-of-table))
+
 (defun vtable-end-of-table ()
-  "Go to the end of the current table."
+  "Move point to the end of the current table.
+Point will be moved to the character following the table, not the last
+row.  Use `vtable-goto-end-of-table' to keep point within table bounds.
+
+If no table is found, point is moved to the end of the buffer."
   (if (text-property-search-forward 'vtable (vtable-current-table) #'eq)
       (point)
     (goto-char (point-max))))
+
+(defun vtable-goto-end-of-table ()
+  "Go to the end of the current table, keeping point in table bounds."
+  (interactive)
+  (vtable-end-of-table)
+  ;; Keep point within table bounds.
+  (vtable-previous-line)
+  (vtable-next-line))
 
 (defun vtable-goto-object (object)
   "Go to OBJECT in the current table.
@@ -403,8 +423,12 @@ Return the position of the object if found, and nil if not."
 
 (defun vtable-goto-table (table)
   "Go to TABLE in the current buffer.
-If TABLE is found, return the position of the start of the table.
-If it can't be found, return nil and don't move point."
+If TABLE is found, return the position of the start of the table.  If it
+can't be found, return nil and don't move point.
+
+If `use-header' is nil, the header line is part of the buffer and point
+will be moved to the header.  Use `vtable-beginning-of-table' to move
+point to the first data row of the table, if present."
   (let ((start (point)))
     (goto-char (point-min))
     (if-let* ((match (text-property-search-forward 'vtable table t)))
@@ -466,8 +490,9 @@ window has changed width since it was updated, updating the TABLE is not
 possible, and an error is signaled."
   (unless old-object
     (setq old-object object))
-  (let* ((objects (vtable-objects table))
-         (inhibit-read-only t))
+  (let ((objects (vtable-objects table))
+        (cache (vtable--ensure-cache table))
+        (inhibit-read-only t))
     ;; First replace the object in the object storage.
     (if (funcall (vtable-object-equal table) old-object (car objects))
         ;; It's at the head, so replace it there.
@@ -475,51 +500,68 @@ possible, and an error is signaled."
               (cons object (cdr objects)))
       ;; Otherwise splice into the list.
       (while (and (cdr objects)
-                  (not (funcall (vtable-object-equal table) (cadr objects) old-object)))
+                  (not (funcall (vtable-object-equal table)
+                                (cadr objects) old-object)))
         (setq objects (cdr objects)))
-      (unless objects
+      (unless (and objects
+                   (funcall (vtable-object-equal table)
+                            (cadr objects) old-object))
         (error "Can't find the old object"))
       (setcar (cdr objects) object))
     ;; Then update the cache...
-    ;; FIXME: If the table's buffer has no visible window, or if its
-    ;; width has changed since the table was updated, the cache key will
-    ;; not match and the object can't be updated.  (Bug #69837).
-    (if-let* ((line-number (seq-position (vtable-objects table) old-object))
-              (line (elt (car (vtable--ensure-cache table)) line-number)))
+    (if-let* ((line-number (seq-position
+                            (car cache)
+                            (assoc old-object
+                                   (car cache)
+                                   (vtable-object-equal table))))
+              (line (elt (car cache) line-number)))
         (progn
           (setcar line object)
           (setcdr line (vtable--compute-cached-line table object))
           ;; ... and redisplay the line in question.
-          (save-excursion
-            (vtable-goto-object old-object)
-            (let ((keymap (get-text-property (point) 'keymap))
-                  (start (point)))
+          (let ((current-object (vtable-current-object))
+                (current-column (vtable-current-column)))
+            (save-excursion
+              (vtable-goto-table table)
+              (vtable-goto-object old-object)
               (delete-line)
               (vtable--insert-line table line line-number
-                                   (nth 1 (vtable--cache table))
-                                   (vtable--spacer table))
-              (add-text-properties start (point) (list 'keymap keymap
-                                                       'vtable table))))
+                                   (nth 1 cache)
+                                   (vtable--spacer table)))
+            (when current-object
+              (vtable-goto-object current-object))
+            (when current-column
+              (vtable-goto-column current-column)))
           ;; We may have inserted a non-numerical value into a previously
           ;; all-numerical table, so recompute.
           (vtable--recompute-numerical table (cdr line))
+          ;; Cache coherence.
+          (vtable--tick-objects-epoch table)
+          (vtable--cache-update-epoch table cache)
           (when sort-after
-            (vtable--sort table)
+            (vtable--sort table cache)
             (vtable-revert)))
+      ;; At this point, the object was updated in objects, but not the
+      ;; cache, which will be considered stale.
       (error "Can't find cached object in vtable"))))
 
-(defun vtable-remove-object (table object &optional retain-rows)
+(defun vtable-remove-object (table object &optional retain-rows inhibit-row-redisplay)
   "Remove OBJECT from TABLE.
 This will also remove the displayed line, and the object will be unmarked.
 
 If the object is not found in the table, signal and error.
+
+Rows below the removed object are redisplayed to update row colors, if
+present.  If INHIBIT-ROW-REDISPLAY is non-nil, this redisplay is
+inhibited.  This is useful for batch updates.  Call `vtable-revert' or
+`vtable-redisplay-range' at the end of a batch to update row colors.
 
 If RETAIN-ROWS is nil, all rows can be removed.  If it is an integer,
 retain that many rows.  If it is t, prevent removing rows."
   (when (and (not (eq retain-rows t))
              (or (not retain-rows)
                  (and (integerp retain-rows)
-                      (> (length (vtable-objects table)) retain-rows))))
+                      (length> (vtable-objects table) retain-rows))))
     (let ((cache (vtable--ensure-cache table))
           (inhibit-read-only t))
       (unless (seq-contains-p (vtable-objects table)
@@ -529,34 +571,50 @@ retain that many rows.  If it is t, prevent removing rows."
       ;; First remove from the objects.
       (setf (vtable-objects table) (seq-remove
                                     (lambda (elt)
-                                      (funcall (vtable-object-equal table) elt object))
+                                      (funcall (vtable-object-equal table)
+                                               elt object))
                                     (vtable-objects table)))
       ;; Then unmark the object.
-      (vtable--unmark-object table object)
+      (vtable--unmark-object table object 'inhibit-update)
       ;; Then adjust the cache and display.
-      (setcar cache (delq (assoc object (car cache) (vtable-object-equal table)) (car cache)))
-      (save-excursion
-        (vtable-goto-table table)
-        (when (vtable-goto-object object)
-          (let ((line-index (- (line-number-at-pos (point))
-                               (vtable-beginning-of-table-line-number))))
-            (delete-line)
-            ;; Now redisplay the lines below if there are row/column colors.
-            (when (or (vtable-column-colors table)
-                      (vtable-row-colors table)
-                      (vtable-column-color-function table)
-                      (vtable-row-color-function table))
-              (vtable--redisplay-range table line-index))))))
-    ;; Keep point within table bounds.
-    (unless (vtable-current-object)
-      (vtable-prev-line))))
+      (if-let* ((old-line (assoc object
+                                 (car cache)
+                                 (vtable-object-equal table))))
+          (progn
+            (setcar cache (delq old-line (car cache)))
+            (save-excursion
+              (vtable-goto-table table)
+              (when (vtable-goto-object object)
+                (let ((line-index (- (line-number-at-pos (point))
+                                     (vtable-beginning-of-table-line-number))))
+                  (delete-line)
+                  ;; Now redisplay the lines below if there are row/column colors.
+                  (when (and (not inhibit-row-redisplay)
+                             (or (vtable-column-colors table)
+                                 (vtable-row-colors table)
+                                 (vtable-column-color-function table)
+                                 (vtable-row-color-function table)))
+                    (vtable-redisplay-range table line-index nil cache)))))
+            ;; We may have removed a non-numerical value from a table that is
+            ;; now all-numerical, so recompute.
+            (vtable--recompute-numerical table (cdr old-line))
+            ;; Cache coherence.
+            (vtable--tick-objects-epoch table)
+            (vtable--cache-update-epoch table cache)
+            ;; Keep point within table bounds.
+            (unless (vtable-current-object)
+              (vtable-previous-line)))
+        ;; At this point, the object was removed from objects, but not
+        ;; the cache, which will be considered stale.
+        (error "Can't find cached object in vtable")))))
 
 ;; FIXME: The fact that the `location' argument of
 ;; `vtable-insert-object' can be an integer and is then interpreted as
 ;; an index precludes the use of integers as objects.  This seems a very
 ;; unlikely use-case, so let's just accept this limitation.
 
-(defun vtable-insert-object (table object &optional location before sort-after)
+(defun vtable-insert-object (table object &optional location
+                                   before sort-after inhibit-row-redisplay)
   "Insert OBJECT into TABLE at LOCATION.
 LOCATION is an object in TABLE.  OBJECT is inserted after LOCATION,
 unless BEFORE is non-nil, in which case it is inserted before LOCATION.
@@ -570,6 +628,11 @@ OBJECT is inserted at the beginning (if the index is less than 0) or
 end (if the index is too large) of the table.  BEFORE is ignored in this
 case.
 
+Rows below the inserted object are redisplayed to update row colors, if
+present.  If INHIBIT-ROW-REDISPLAY is non-nil, this redisplay is
+inhibited.  This is useful for batch updates.  Call `vtable-revert' or
+`vtable-redisplay-range' at the end of a batch to update row colors.
+
 If SORT-AFTER is non-nil, sort the table after the object is inserted.
 In either case, update the displayed table."
   ;; If the vtable is empty, just add the object and regenerate the
@@ -577,31 +640,37 @@ In either case, update the displayed table."
   (if (null (vtable-objects table))
       (progn
         (setf (vtable-objects table) (list object))
-        (vtable--recompute-numerical table (vtable--compute-cached-line table object))
-        (vtable-goto-table table)
-        (vtable-revert-command))
-    ;; Ensure the cache is warm with the current objects before we
-    ;; manually insert rows into either the object or cache lists.  This
-    ;; ensures the object/line count is consistent.
+        ;; No need to tick the cache, it will be refreshed.
+        (vtable--tick-objects-epoch table)
+        (vtable--recompute-numerical
+         table
+         (vtable--compute-cached-line table object))
+        (save-excursion
+          (vtable-goto-table table)
+          (vtable-revert-command)))
     (let ((cache (vtable--ensure-cache table)))
       ;; First insert into the objects.
       (let ((pos (if location
                      (if (integerp location)
-                         (prog1
-                             (nthcdr location (vtable-objects table))
-                           ;; Do not prepend if index is too large:
-                           (setq before nil))
-                       ;; First find the object by specified equality,
-                       ;; then memq once we have the object.
-                       (or (memq
-                            (seq-find (lambda (elt)
-                                        (funcall (vtable-object-equal table)
-                                                 elt location))
-                                      (vtable-objects table))
-                            (vtable-objects table))
-                           ;; Prepend if `location' is not found and
-                           ;; `before' is non-nil:
-                           (and before (vtable-objects table))))
+                         (if (vtable--cache-sorted cache)
+                             (error "Unsort the vtable to insert by integer location")
+                           (prog1
+                               (nthcdr location (vtable-objects table))
+                             ;; Do not prepend if index is too large:
+                             (setq before nil)))
+                       (or
+                        (let ((loc (vtable-objects table)))
+                          (while (and (cdr loc)
+                                      (not (funcall (vtable-object-equal table)
+                                                    (car loc) location)))
+                            (setq loc (cdr loc)))
+                          (if (funcall (vtable-object-equal table)
+                                       (car loc) location)
+                              loc
+                            nil))
+                        ;; Prepend if `location' is not found and
+                        ;; `before' is non-nil:
+                        (and before (vtable-objects table))))
                    ;; If `location' is nil and `before' is non-nil, we
                    ;; prepend the new object.
                    (if before (vtable-objects table)))))
@@ -617,16 +686,21 @@ In either case, update the displayed table."
               (setcdr pos (cons object (cdr pos)))
             ;; Otherwise, append the object.
             (nconc (vtable-objects table) (list object)))))
+      ;; Cache coherence.  There is a non-local exit, via error, below;
+      ;; cache will be stale on error as the epochs will not match up.
+      (vtable--tick-objects-epoch table)
       ;; Then adjust the cache and display.
       (save-excursion
         (vtable-goto-table table)
         (let* ((inhibit-read-only t)
-               (keymap (get-text-property (point) 'keymap))
                (ellipsis (vtable-ellipsis table))
-               (elem (if location  ; This binding mirrors the binding of `pos' above.
+               (elem (if location ; location mirrors `pos', above.
                          (if (integerp location)
                              (nth location (car cache))
-                           (or (assoc location (car cache) (vtable-object-equal table))
+                           (or (assoc
+                                location
+                                (car cache)
+                                (vtable-object-equal table))
                                (and before (caar cache))))
                        (if before (caar cache))))
                (pos (memq elem (car cache)))
@@ -656,42 +730,42 @@ In either case, update the displayed table."
             (vtable--insert-line table line line-index
                                  (nth 1 cache) (vtable--spacer table)
                                  ellipsis)
-            (add-text-properties start (point) (list 'keymap keymap
-                                                     'vtable table))
             ;; We may have inserted a non-numerical value into a previously
             ;; all-numerical table, so recompute.
             (vtable--recompute-numerical table (cdr line))
+            ;; Cache coherence.
+            (vtable--cache-update-epoch table cache)
             (if sort-after
                 (progn
                   ;; Revert does redisplay.
-                  (vtable--sort table)
+                  (vtable--sort table cache)
                   (vtable-revert))
               ;; Now redisplay the lines below if there are row/column colors.
-              (when (or (vtable-column-colors table)
-                        (vtable-row-colors table)
-                        (vtable-column-color-function table)
-                        (vtable-row-color-function table))
-                (vtable--redisplay-range table (1+ line-index))))))))))
+              (when (and (not inhibit-row-redisplay)
+                         (or (vtable-column-colors table)
+                             (vtable-row-colors table)
+                             (vtable-column-color-function table)
+                             (vtable-row-color-function table)))
+                (vtable-redisplay-range table (1+ line-index) nil cache)))))))))
 
-(defun vtable--redisplay-range (table &optional from-line to-line)
+(defun vtable-redisplay-range (table &optional from-line to-line cache)
   "Update row/column colors for TABLE.
 If FROM-LINE is nil, start at 0, the first line.
-If TO-LINE is nil, end at the last line, the number of objects."
+If TO-LINE is nil, end at the last line, the number of objects.
+If CACHE is non-nil, use that copy."
   (let ((line-index (or from-line 0))
         (inhibit-read-only t))
     (setq to-line (or to-line (1- (length (vtable-objects table)))))
-    (when (<= from-line to-line)
+    (when (<= line-index to-line)
       (save-excursion
+        (vtable-beginning-of-table)
+        (setq cache (or cache (vtable--ensure-cache table)))
         (while (<= line-index to-line)
-          (let ((line (elt (car (vtable--cache table)) line-index)))
-            (let ((keymap (get-text-property (point) 'keymap))
-                  (start (point)))
-              (delete-line)
-              (vtable--insert-line table line line-index
-                                   (nth 1 (vtable--cache table))
-                                   (vtable--spacer table))
-              (add-text-properties start (point) (list 'keymap keymap
-                                                       'vtable table))))
+          (let ((line (elt (car cache) line-index)))
+            (delete-line)
+            (vtable--insert-line table line line-index
+                                 (nth 1 cache)
+                                 (vtable--spacer table)))
           (cl-incf line-index))))))
 
 (defun vtable-column (table index)
@@ -761,9 +835,31 @@ recompute the column specs when the table data has changed."
 
 (defun vtable--recompute-cache (table)
   (let* ((data (vtable--compute-cache table))
-         (widths (vtable--compute-widths table data)))
-    (setf (gethash (vtable--cache-key) (slot-value table '-cache))
-          (list data widths))))
+         (widths (vtable--compute-widths table data))
+         (cache (list
+                 data
+                 widths
+                 (vtable--objects-epoch table)
+                 ;; Cache sorted flag.
+                 nil)))
+    (vtable--sort table cache)
+    (setf (gethash (vtable--cache-key)
+                   (slot-value table '-cache))
+          cache)))
+
+(defun vtable--cache-update-epoch (table cache)
+  (setf (nth 2 cache)
+        (vtable--objects-epoch table)))
+
+(defun vtable--cache-verify-epoch (table cache)
+  (eq (nth 2 cache)
+      (vtable--objects-epoch table)))
+
+(defun vtable--cache-set-sorted (cache sorted)
+  (setf (nth 3 cache) sorted))
+
+(defun vtable--cache-sorted (cache)
+  (nth 3 cache))
 
 (defun vtable--ensure-cache (table)
   (or (vtable--cache table)
@@ -789,21 +885,24 @@ recompute the column specs when the table data has changed."
         (add-text-properties start (point)
                              (list 'keymap vtable-header-line-map
                                    'rear-nonsticky t
+                                   'vtable-header t
                                    'vtable table))
         (setq start (point))))
-    (vtable--sort table)
-    ;; Insert the data.
-    (let ((line-number 0))
-      (dolist (line (car (vtable--ensure-cache table)))
-        (vtable--insert-line table line line-number widths spacer
-                             ellipsis)
-        (setq line-number (1+ line-number))))
-    (add-text-properties start (point)
-                         (list 'rear-nonsticky t
-                               'vtable table))
-    (goto-char start)))
+    (let ((cache (vtable--ensure-cache table)))
+      (vtable--sort table cache)
+      ;; Insert the data.
+      (let ((line-number 0))
+        (dolist (line (car cache))
+          (vtable--insert-line table line line-number widths spacer
+                               ellipsis)
+          (setq line-number (1+ line-number))))
+      (add-text-properties start (point)
+                           (list 'rear-nonsticky t
+                                 'vtable table))
+      (goto-char start))))
 
-(defun vtable--insert-line (table line line-number widths spacer &optional ellipsis)
+(defun vtable--insert-line (table line line-number widths spacer
+                                  &optional ellipsis)
   (let ((start (point))
         (columns (vtable-columns table))
         (column-color-function (vtable-column-color-function table))
@@ -899,27 +998,32 @@ recompute the column specs when the table data has changed."
                                    (list 'space
                                          :width (list spacer))))))
            (put-text-property start (point) 'vtable-column index)
-           (put-text-property start (point) 'keymap keymap)
            (when (or column-color-function column-colors)
              (add-face-text-property
               start (point)
               (if column-color-function
-                  (funcall column-color-function line-number index value (car line) column-colors)
+                  (funcall column-color-function
+                           line-number index value (car line) column-colors)
                 (elt column-colors (mod index (length column-colors))))))
            (when (and divider (not last))
              (insert divider)
              (setq start (point))))))
      (cdr line))
     (insert "\n")
-    (put-text-property start (point) 'vtable-object (car line))
+    (add-text-properties start (point)
+                         (list 'vtable-object (car line)
+                               'keymap keymap
+                               'vtable table))
     (when (vtable-object-marked-p table (car line))
-      (add-face-text-property start (point) (vtable-marked-face table) (car line)))
+      (add-face-text-property start (point)
+                              (vtable-marked-face table) (car line)))
     (let ((row-colors (slot-value table '-cached-colors)))
       (cond
        (row-color-function
         (add-face-text-property
          start (point)
-         (funcall row-color-function line-number (car line) row-colors)))
+         (funcall row-color-function
+                  line-number (car line) row-colors)))
        ((and row-colors
              (null column-colors))
         (add-face-text-property
@@ -928,21 +1032,51 @@ recompute the column specs when the table data has changed."
     (when (vtable-row-properties table)
       (save-excursion
         (forward-line -1)
-        (add-text-properties (pos-bol) (pos-eol) (vtable-row-properties table))))))
+        (add-text-properties (pos-bol) (pos-eol)
+                             (vtable-row-properties table))))))
+
+(defvar vtable--inhibit-objects-tick nil
+  "If non-nil, objects epoch will not be increased.  This is used by
+object marking functions which do not alter object state.")
+
+(defun vtable--objects-epoch (table)
+  (slot-value table '-objects-epoch))
+
+(defun vtable--tick-objects-epoch (table)
+  (unless vtable--inhibit-objects-tick
+    (setf (slot-value table '-objects-epoch)
+          (1+ (slot-value table '-objects-epoch)))))
 
 (defun vtable--cache-key ()
-  (cons (frame-terminal) (window-body-width nil 'remap)))
+  (if (and (window-live-p (selected-window))
+           (eq (window-buffer) (current-buffer)))
+      (cons (frame-terminal) (window-body-width nil 'remap))
+    ;; Default key for a windowless buffer.
+    (cons t t)))
 
 (defun vtable--cache (table)
-  (gethash (vtable--cache-key) (slot-value table '-cache)))
+  (let ((cache (gethash (vtable--cache-key) (slot-value table '-cache))))
+    (if (length= (car cache) 0)
+        ;; Force an empty cache to be populated; this can occur at
+        ;; vtable initialization.
+        (progn
+          (vtable--clear-cache table)
+          nil)
+      (if (vtable--cache-verify-epoch table cache)
+          cache
+        ;; Force a stale cache to be repopulated.
+        (vtable--clear-cache table)
+        nil))))
 
 (defun vtable--clear-cache (table)
   (setf (gethash (vtable--cache-key) (slot-value table '-cache)) nil))
 
-(defun vtable--sort (table)
+(defun vtable--clear-all-caches (table)
+  (clrhash (slot-value table '-cache)))
+
+(defun vtable--sort (table cache)
   (pcase-dolist (`(,index . ,direction) (vtable-sort-by table))
-    (let* ((cache (vtable--ensure-cache table))
-           (column (elt (vtable-columns table) index))
+    (let* ((column (elt (vtable-columns table) index))
            (numerical (vtable-column--numerical column))
            (numcomp (if (eq direction 'descend)
                         #'> #'<))
@@ -970,7 +1104,8 @@ recompute the column specs when the table data has changed."
                                (format "%s" (car c1)))
                              (if (stringp (car c2))
                                  (car c2)
-                               (format "%s" (car c2)))))))))))))
+                               (format "%s" (car c2))))))))))
+      (vtable--cache-set-sorted cache t))))
 
 (defun vtable--indicator (table index)
   (let ((order (car (last (vtable-sort-by table)))))
@@ -1156,6 +1291,17 @@ If NEXT, do the next column."
     (setq text-scale-remap-header-line t))
   (vtable-header-mode))
 
+(defun vtable--text-scale-pixels (pixels)
+  ;; Adjust pixels for text-scaled buffers
+  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
+
+;; NOTE: The alternative to `vtable--text-scale-pixels' would be to
+;; record the vtable buffer and use that as a reference buffer for
+;; `string-pixel-width'.
+(defun vtable--string-pixel-width (str)
+  ;; Adjust pixel-width for text-scaled buffers
+  (vtable--text-scale-pixels (string-pixel-width str)))
+
 (defun vtable--limit-string (string pixels &optional truncate-guess-tolerance)
   "Truncate STRING to fit into width PIXELS.
 This function tries to guess STRING's truncated length, in characters,
@@ -1186,6 +1332,10 @@ if you find that the guess is too small."
                   (> (vtable--string-pixel-width string) pixels)))
       (setq string (substring string 0 (1- (length string)))))
     string))
+
+(defun vtable--char-width (table)
+  (vtable--string-pixel-width
+   (propertize "x" 'face (vtable-face table))))
 
 (defun vtable--compute-width (table spec)
   (cond
@@ -1452,7 +1602,8 @@ Interactively, N is the prefix argument."
 The default order is determined by the table's objects or
 `:objects-function'."
   (interactive)
-  (let ((table (vtable-current-table)))
+  (let* ((table (vtable-current-table))
+         (cache (vtable--ensure-cache table)))
     (unless table
       (user-error "No table under point"))
     (cond
@@ -1462,7 +1613,8 @@ The default order is determined by the table's objects or
         (setf (vtable-sort-by table) (slot-value table '-orig-sort-by))))
      (t
       (message "Sort disabled")
-      (setf (vtable-sort-by table) nil)))
+      (setf (vtable-sort-by table) nil)
+      (vtable--cache-set-sorted cache nil)))
     (vtable-revert)))
 
 (defun vtable-next-line (&optional n)
@@ -1474,7 +1626,7 @@ N has the same meaning as in `forward-line', which see."
           (vtable-current-object))
     (forward-line (or n 1))))
 
-(defun vtable-prev-line (&optional n)
+(defun vtable-previous-line (&optional n)
   "Like `forward-line', but keeps point within table body bounds.
 N has the same meaning as a negative argument in `forward-line', which see."
   (interactive "p")
@@ -1502,22 +1654,25 @@ N has the same meaning as a negative argument in `forward-line', which see."
 (defun vtable--mark-object (table object)
   (unless (vtable-object-marked-p table object)
     (push object (slot-value table '-marked-objects))
-    (vtable-update-object table object)))
+    (let ((vtable--inhibit-objects-tick t))
+      (vtable-update-object table object))))
 
 (defun vtable-mark-object (object &optional inhibit-next-line)
   (vtable--mark-object (vtable-current-table) object)
   (unless inhibit-next-line
     (vtable-next-line 1)))
 
-(defun vtable--unmark-object (table object)
+(defun vtable--unmark-object (table object &optional inhibit-update)
   (let ((removed-seq (seq-remove (lambda (elt)
                                    (funcall (vtable-object-equal table)
                                             elt object))
                                  (slot-value table '-marked-objects))))
-    (unless (eq (length removed-seq)
-                (length (slot-value table '-marked-objects)))
+    (unless (length= removed-seq
+                     (length (slot-value table '-marked-objects)))
       (setf (slot-value table '-marked-objects) removed-seq)
-      (vtable-update-object table object))))
+      (unless inhibit-update
+        (let ((vtable--inhibit-objects-tick t))
+          (vtable-update-object table object))))))
 
 (defun vtable-unmark-object (object &optional inhibit-next-line)
   (vtable--unmark-object (vtable-current-table) object)
