@@ -176,7 +176,8 @@ Finally, here's an example that uses just about all the features:
               ,(lambda (value max-width table)
                  (propertize "*" 'display
                              (create-image value nil nil
-                                           :max-width max-width))))
+                                           :max-width max-width
+                                           :scale 1.0))))
             (:name "Size" :width 10
                    :formatter file-size-human-readable)
             (:name "Time" :width 10 :primary ascend)
@@ -223,23 +224,46 @@ which is called with the @dfn{value} as the argument.  The formatter
 commonly makes the value more reader friendly.
 
 @cindex displayer of a vtable
-Finally, the formatted value is passed to the @dfn{displayer}
-function, which is responsible for putting the table face on the
-formatted value, and also ensuring that it's not wider than the column
-width.  The displayer will commonly truncate too-long strings and
-scale image sizes.
+Finally, the formatted value is passed to the @dfn{displayer} function,
+which is responsible for putting the table face on the formatted value,
+and also ensuring that it's not wider than the column's pixel width.
+The displayer will commonly truncate too-long strings and scale image
+sizes.
 
 All these three transforms, the getter, the formatter and the display
 functions, can be defined on a per-column basis, and also on a
 per-table basis.  (The per-column transform takes precedence over the
 per-table transform.)
 
-User commands that are defined on a table does not work on the
-displayed data.  Instead they are called with the original object as
-the argument.
+User commands that are defined on a table do not work on the displayed
+data.  Instead they are called with the original object as the argument.
 
 @node Making A Table
 @chapter Making A Table
+
+Tables assume that its objects are unique.  While it is possible for
+duplicate objects to be inserted, the table will operate only on the
+first instance found of each object, so it's best to insert unique
+objects.
+
+A vtable can be inserted into a single buffer only.  While a vtable
+buffer can be displayed in multiple windows, be aware that the buffer
+itself will contain the lines formatted for its most-recently selected
+window.
+
+Table mutation functions, insert, update, remove, etc., assume the table
+has been inserted into a buffer.  Call them only after insertion.
+
+A vtable is automatically resized based on its selected window's width.
+
+You can use @code{text-scale-mode} in vtable buffers.  Table content is
+automatically scaled up and down with the buffer.
+
+You can optionally mark and unmark objects in the table similar to
+@code{dired}.  Associate the marking functions you need with keys
+defined in the table's @code{:actions}.
+
+A vtable will not operate correctly in narrowed buffers.
 
 @findex make-vtable
 The interface function for making (and optionally inserting a table
@@ -301,8 +325,16 @@ The width of @var{n} @samp{x} characters in the table's face.
 
 If no @code{width} is provided, the width is calculated based on the
 column data (provided in the @code{:objects} list or through the
-@code{:objects-function}) or, if there is no data, on the basis of the
-window width.
+@code{:objects-function}), optionally including the column-name width.
+An inferred column width uses the result of the column's formatter
+function (or the table's formatter), if present.  Displayer functions
+have no impact on inferred widths.  If there is no data, the column
+width is computed on the basis of the window width.
+
+@item infer-width
+This defaults to @code{data}, which computes the default width based on
+the column's content, or if @code{data+name}, also considers the
+column's name width.
 
 @item min-width
 This uses the same format as @code{width}, but specifies the minimum
@@ -314,6 +346,30 @@ width (and overrides @code{width} if @code{width} is larger than this.
 @code{min-width}/@code{max-width} can be useful if @code{width} is
 given as a percentage of the window width, and you want to ensure that
 the column doesn't grow pointlessly large or unreadably narrow.
+
+@item truncate-guess
+If a formatted column value will not fit into the column's width, it is
+shortened on a pixelwise basis to fit in the allotted pixel width, and
+with the table's ellipsis appended to indicate shortening.
+@code{truncate-guess} influences the truncation algorithm by adjusting
+the number of characters to add to its initial guess.  This is an
+integer that defaults to 0.  If you find the guesses are imprecise for
+your specific content; e.g., if it has mixed faces of differing heights
+that need special treatment, specify a larger guess increment.  If nil,
+guessing is disabled, which will be slower for longer values.  You can
+provide your own truncation function in your column @code{displayer}.
+
+@item inhibit-text-scaling
+Image entries are automatically detected and text-scaling disabled for
+that entry.  If an entry is more complex and contains mixed content, you
+can disable text scaling for that column by setting
+@code{inhibit-text-scaling} to non-nil.
+
+@item numeric
+Numeric content is automatically detected by scanning for all numeric
+values in a column.  Set @code{numeric} to @code{t} to indicate that
+your column's data are numeric, to @code{nil} to indicate that the
+column is not numeric, or to @code{infer}, which is the default.
 
 @item primary
 Whether this is the primary column---this will be used for initial
@@ -327,6 +383,17 @@ If present, this function will be called to return the column value.
 It's called with two parameters: the object and the table.
 @end defun
 
+@item comparator
+This function will be called to compare column values.  Use this when
+your objects contain data that needs special ordering, where the values
+are not numeric or strings in a collation-sortable form.  Another case
+would be where you want the equivalent of @code{sort-fold-case}.
+
+@defun comparator value1 value2
+It's called with two values to compare, and it should return a value
+following the semantics of @code{<} or, @code{string-lessp}.
+@end defun
+
 @item formatter
 If present, this function will be called to format the value.
 
@@ -335,10 +402,12 @@ It's called with one parameter: the column value.
 @end defun
 
 @item displayer
-If present, this function will be called to prepare the formatted
-value for display.  This function should return a string with the
-table face applied, and also limit the width of the string to the
-display width.
+If present, this function will be called to prepare the formatted value
+for display.  This function should return a string with the table face
+applied, and also limit the width of the string to the display width, or
+scale images.  Images created with @code{:scale} set to 1.0 will auto
+scale to the image @code{:width} when that is set to max-width as passed
+to the displayer function.
 
 @defun column-displayer fvalue max-width table
 @var{fvalue} is the formatted value; @var{max-width} is the maximum
@@ -347,8 +416,18 @@ width (in pixels), and @var{table} is the table.
 
 @item align
 Should be either @code{right} or @code{left}.  If not specified,
-numerical values will be flushed to the right, and all other values will
-be flushed to the left.
+numerical values will be aligned to the right, and all other values will
+be aligned to the left.
+
+@item header-align
+Should be either @code{right} or @code{left}.  If not specified, the
+header's column name will be aligned the same way as @code{align}
+indicates, or its default.
+
+@item extra-data
+Use this to attach any lisp object, simple or complex, to a column's
+definition.  You can consult this after calling, for example,
+@code{vtable-current-column} to retrieve the current column.
 @end table
 
 @item :getter
@@ -391,20 +470,34 @@ This function should return a string with the table face applied, and
 truncated to the display width.
 
 This can be used to (for instance) change the size of images that are
-displayed in the table.
+displayed in the table.  Images created with @code{:scale} set to 1.0
+will auto scale to the image @code{:width} when that is set to max-width
+as passed to the displayer function.
+
 @end defun
 
 @item :use-header-line
 If non-@code{nil} (which is the default), display the column names on
-the header line.  This is the most common use
-case, but if there's other text in the buffer before the table, or
-there are several tables in the same buffer, then this should be
-@code{nil}.
+the header line.  This is the most common use case, but if there is
+other text in the buffer before the table, or there are several tables
+in the same buffer, then this should be @code{nil}.
 
 @item :face
-The face to be used.  This defaults to @code{vtable}.  This face
-doesn't override the faces in the data, or the faces supplied by the
-getter and formatter functions.
+The face to be used for the table body.  This defaults to @code{vtable}.
+This face doesn't override the faces in the data, or the faces supplied
+by the getter and formatter functions.
+
+@item :header-face
+The face to be used for the table header.  This defaults to
+@code{vtable-header} which inherits from @code{vtable}, so they are
+equivalent by default unless their definitions are changed.
+
+@item :marked-face
+The face to be used when a table row is marked (or selected).  This
+defaults to @code{vtable-marked} which inherits from the @code{region}
+and @code{vtable} faces.  This face doesn't override the faces in the
+data, or the faces supplied by the @code{getter} and @code{formatter}
+functions.
 
 @item :row-colors
 If present, this should be a list of color names to be used as the
@@ -424,6 +517,38 @@ of faces to be used.  If both @code{:row-colors} and
 @code{:column-colors} is present, the colors will be ``blended'' to
 produce the final colors in the table.
 
+@item :row-color-function
+If you want to control row colors programmatically, provide a function
+to compute a row's color.  You can combine this function with the
+table's @code{:row-colors} and @code{:column-color}, which are mixed if
+both are specified.
+
+The function is called with the arguments @code{line-number}
+@code{object} @code{row-colors}, where @code{row-colors} are the colors
+mixed from @code{:row-colors} and @code{:column-colors}, if specified,
+which you can ignore if you compute colors separately.
+
+The function should return a face text property that will be added to
+the row's text properties.
+
+@item :column-color-function
+If you want to control column colors programmatically, provide a
+function to compute a column's color.  You can combine this function
+with the table's @code{:row-colors} and @code{:column-color}, which are
+mixed if both are specified.
+
+The function is called with the arguments @code{line-number}
+@code{column-index} @code{value} @code{object} @code{column-colors},
+where @code{value} is the column's raw value from the object, not its
+formatted string, and @code{column-colors} is the pre-computed column
+color mixed from @code{:row-colors} and @code{:column-colors}, if
+specified, which you can ignore if you compute colors separately.
+@code{column-index} is the 0-based index into the list of columns
+defined in the table.
+
+The function should return a face text property that will be added to
+the row's text properties.
+
 @item :actions
 This uses the same syntax as @code{define-keymap}, but doesn't refer
 to commands directly.  Instead each key is bound to a command that
@@ -436,9 +561,19 @@ usual, and if they're supposed to work on the object displayed on the
 current line, they can use the @code{vtable-current-object} function
 (@pxref{Interface Functions}) to determine what that object is.
 
+@item :use-navigation-keymap
+Add several predefined navigation actions to @code{:keymap}.  These
+include convenience mappings for moving point to the next and previous
+lines, to the beginning or end of the table, and to quit the table.
+
+@item :close-action
+The default table close action, initiated with the ``q'' key in the
+navigation keymap, which defaults to @code{bury-buffer}.  This can also
+be @code{quit-window}, @code{quit-window-kill}, a function of your own.
+
 @item :separator-width
 The width of the blank space between columns.  If not specified, it
-defaults to 1.
+defaults to 1 character's width in the table's face.
 
 @item :divider-width
 @itemx :divider
@@ -451,6 +586,39 @@ of the face used to display the table.  If not specified,
 @code{:divider-width} effectively sets the divider to a whitespace
 string of that width.
 
+@item :divider-on-header
+If non-@code{nil}, display dividers on the table's header line.  The
+default is @code{nil}.
+
+@item :header-intangible
+If non-@code{nil}, prevent point from entering the header line.  This
+affects only header lines that are contained in the buffer body, and has
+no effect when @code{:use-header-line} is non-nil.  The default is
+@code{nil}.
+
+@item :decor-intangible
+If non-@code{nil}, prevent point from entering the ancillary decorative
+characters added as padding, spacing, or the divider.  The default is
+@code{nil}.
+
+@item :text-scale-header-line
+If non-@code{nil}, when @code{text-scale-mode} is enabled in the vtable
+buffer, also scale the @code{header-line} in line with the buffer body.
+This keeps the header line aligned with the body as the buffer text
+scale changes.  The default is @code{nil}.
+
+@item :auto-resize-delay
+Table buffers are automatically resized and column widths recomputed,
+when its associated selected-window width changes.  This is
+``debounced'' and protected from repeated calls by introducing a delay
+between invocations.  The default is 0.15 seconds, which you can
+increase as needed.  It is not recommended to go below the default.  If
+there are multiple vtables in the buffer, they will all be resized.
+
+@item :object-equal
+This function tests for the equality of two table objects.  It defaults
+to @code{eq}.
+
 @item :sort-by
 This should be a list of tuples, and specifies how the table is to be
 sorted.  Each tuple should consist of an integer (the column index)
@@ -459,17 +627,53 @@ and either @code{ascend} or @code{descend}.
 The table is first sorted by the first element in this list, and then
 the next, until the end is reached.
 
+@item :sort-indicator
+This is a list of two cons cells that specify the sort ascending and
+descending characters that are shown on the table header to indicate a
+sorted column.  The first character is the fancier ``graphical''
+character, and the second a text-only character.  If the first character
+cannot be displayed on the selected frame, the table will show the
+text-only character.  The default is
+@code{vtable-sort-indicator-default}.  For example:
+
+@lisp
+'((?▼ ?v) (?▲ ?^)) ; This is the default.
+'((?⬇ ?v) (?⬆ ?^)) ; Alternative arrows.
+@end lisp
+
+@item :sort-indicator-face-ascend
+@itemx :sort-indicator-face-descend
+The faces to be used for indicating ascending or descending sorted
+columns on the table header.  These default to
+@code{vtable-sort-indicator-ascend}
+@code{vtable-sort-indicator-descend}, respectively, and which inherit
+from @code{vtable-header}, so they are equivalent to the header unless
+their definitions are changed.  These faces should have the same
+character widths as the table's @code{:header-face}.
+
 @item :ellipsis
-By default, when shortening displayed values, an ellipsis will be
-shown.  If this is @code{nil}, no ellipsis is shown.  (The text to use
-as the ellipsis is determined by the @code{truncate-string-ellipsis}
-function.)
+By default, when truncating too-wide displayed values, an ellipsis will
+appended to the shortened value.  If this is @code{nil}, no ellipsis is
+shown.  If non-@code{nil}, use the specified string.  The default
+value is determined by the @code{truncate-string-ellipsis} function.
+
+@item :row-text-properties
+A list of text properties to assign to each row when rendering the
+table.  This can be used, for example, to add @code{mouse-face} or
+@code{cursor-face} to each row.
+
+@findex vtable-extra-data
+@item :extra-data
+Use this to attach any lisp object, simple or complex, to a table
+definition.  You can consult this by calling after calling
+@code{vtable-extra-data}.
 
 @findex vtable-insert
 @item :insert
 By default, @code{make-vtable} will insert the table at point.  If this
-is @code{nil}, nothing is inserted, but the vtable object is returned,
-and you can insert it later with the @code{vtable-insert} function.
+is @code{nil}, nothing is inserted, and the vtable object is returned,
+which you can insert into a buffer later with the @code{vtable-insert}
+function.
 @end table
 
 @code{make-table} returns a @code{vtable} object.  You can access the
@@ -490,8 +694,16 @@ Sort the table by the current column
 (@code{vtable-sort-by-current-column}).  Note that the table is sorted
 according to the data returned by the getter function (@pxref{Making A
 Table}), not by how it's displayed in the buffer.  Columns that have
-only numerical data are sorted as numbers, the rest are sorted as
-strings.
+only numerical data, or are identified as numeric, are sorted as
+numbers, other columns are sorted as strings, or sorted using
+its custom comparator function.
+
+@findex vtable-unsort
+@item U
+Unsort the table (@code{vtable-unsort}).  Calling this function toggles
+between unsorting the table, and restoring the sort order at table
+creation which will be specified by the table's @code{:sort-by}, or
+implied by the order of table's objects or @code{:objects-function}.
 
 @findex vtable-narrow-current-column
 @item @{
@@ -515,7 +727,40 @@ Move to the next column (@code{vtable-next-column}).
 @item g
 Regenerate the table (@code{vtable-revert-command}).  This command
 mostly makes sense if the table has a @code{:objects-function} that
-can fetch new data.
+can fetch new data.  Reverting unmarks all objects.
+@end table
+
+When the navigation keymap is enabled, the following keys are bound:
+
+@table @kbd
+@findex vtable-next-line
+@item n
+@item C-n
+@item <down>
+@item <tab>
+Move point to the next line, keeping the current column (@code{vtable-next-line}).
+
+@findex vtable-previous-line
+@item p
+@item C-p
+@item <up>
+@item S-<tab>
+Move point to the previous line, keeping the current column (@code{vtable-previous-line}).
+
+@findex vtable-goto-beginning-of-table
+@item <home>
+Move point to the first data row of the table
+(@code{vtable-goto-beginning-of-table}).
+
+@findex vtable-goto-end-of-table
+@item <end>
+Move point to the last data row of the table
+(@code{vtable-goto-end-of-table}).
+
+@findex vtable-close
+@item q
+Close the table, invoking the function specified by @code{:close-action}
+(@code{vtable-close}).
 @end table
 
 @node Interface Functions
@@ -532,6 +777,12 @@ such interaction.
 This function returns the table under point.
 @end defun
 
+@defun vtable-buffer &optional table
+Return the buffer associated with this table, or if nil, the current
+table under point.  Return nil if the table has not yet been inserted
+into a buffer.
+@end defun
+
 @defun vtable-current-object
 This function returns the object on the current line.  (Note that this
 is the original object, not the characters displayed in the
@@ -545,7 +796,10 @@ This function returns the column index of the column under point.
 @defun vtable-goto-table table
 Move point to the start of @var{table} and return the position.  If
 @var{table} can't be found in the current buffer, don't move point and
-return @code{nil}.
+return @code{nil}.  If the table's header is in the buffer, point will
+be moved to the first character of the header.  Use
+@code{vtable-goto-beginning-of-table} if you want point to be on the
+first data line.
 @end defun
 
 @defun vtable-goto-object object
@@ -554,59 +808,192 @@ the current table and return the position.  If @var{object} can't be found,
 don't move point and return @code{nil}.
 @end defun
 
+@defun vtable-object-line-number object
+Return the absolute buffer line number of @var{object}, or @code{nil} if
+not found.
+@end defun
+
+@defun vtable-object-line-index object
+Return the relative 0-based index of @var{object} in the current table,
+or @code{nil} if not found.
+@end defun
+
 @defun vtable-goto-column index
 Move point to the start of the @var{index}th column.  (The first
 column is numbered zero.)
 @end defun
 
 @defun vtable-beginning-of-table
-Move to the beginning of the current table.
+Move point to the beginning of the current table.  Point will be before
+the header, if the header is in the buffer vs. on the header line, or
+the first data row.
 @end defun
 
-@defun vtable-end-of-table
-Move to the end of the current table.
+@defun vtable-goto-beginning-of-table
+Move point to the first data row of the current table.
 @end defun
 
-@defun vtable-remove-object table object
-Remove @var{object} from @var{table}.  This also updates the displayed
+@defun vtable-beginning-of-table-line-number
+Return the absolute buffer line number of the start of the current
 table.
 @end defun
 
-@defun vtable-insert-object table object &optional location before
-Insert @var{object} into @var{table}.  @var{location} should be an
-object in the table, the new object is inserted after this object, or
-before it if @var{before} is non-@code{nil}.  If @var{location} is
-@code{nil}, @var{object} is appended to @var{table}, or prepended if
-@var{before} is non-@code{nil}.
+@defun vtable-end-of-table
+Move point to the end of the current table.  Point will be beyond the
+last character of the table.
+@end defun
+
+@defun vtable-goto-end-of-table
+Move point to the last data row of the table under point.
+@end defun
+
+@defun vtable-end-of-table-line-number
+Return the absolute buffer line number of the end of the current table.
+@end defun
+
+@defun vtable-remove-object table object &optional retain-rows inhibit-row-redisplay
+Remove @var{object} from @var{table}.  The table does not have to be the
+current table.  This also updates the displayed table.  If
+@var{retain-rows} is an integer, it is the number of rows to ensure
+remain in the table, for example 1, to prevent an empty table.  If it is
+@code{t}, then object removal is disallowed.
+
+Rows below the removed object's line will be redisplayed to update their
+row colors, if needed.  If @var{inhibit-row-redisplay} is non-nil, this
+redisplay is not performed, which may be useful for batch updates.  In
+which case, @code{vtable-revert} or @code{vtable-redisplay-range} can be
+called to redisplay the table at the end of the batch.
+@end defun
+
+@defun vtable-insert-object table object &optional location before select-after sort-after inhibit-row-redisplay
+Insert @var{object} into @var{table}.  The table does not have to be the
+current table.  @var{location} should be an object in the table, the new
+object is inserted after this object, or before it if @var{before} is
+non-@code{nil}.  If @var{location} is @code{nil}, @var{object} is
+appended to @var{table}, or prepended if @var{before} is non-@code{nil}.
 
 @var{location} can also be an integer, a zero-based index into the
 table.  In this case, @var{object} is inserted at that index.  If the
 index is out of range, @var{object} is prepended to @var{table} if the
 index is too small, or appended if it is too large.  In this case,
-@var{before} is ignored.
+@var{before} is ignored.  Note: Inserting by location is supported only
+for unsorted tables.  A table with active sort criteria must first be
+unsorted.
 
 If @var{table} is empty, @var{location} and @var{before} are ignored.
 
-This also updates the displayed table.
+If the table is the current table, and @var{select-after} is non-nil,
+the new object's row is selected, otherwise, whatever object is selected
+remains selected.
+
+If @var{sort-after} is non-nil, and the table has sorting criteria in
+effect, the table will be sorted and redisplayed after the object
+insertion.
+
+Rows below the inserted object's line will be redisplayed to update their
+row colors, if needed.  If @var{inhibit-row-redisplay} is non-nil, this
+redisplay is not performed, which may be useful for batch updates.  In
+which case, @code{vtable-revert} or @code{vtable-redisplay-range} can be
+called to redisplay the table at the end of the batch.
 @end defun
 
-@defun vtable-update-object table object &optional old-object
-Update @var{object}'s representation in @var{table}.  Optional argument
-@var{old-object}, if non-@code{nil}, means to replace @var{old-object}
-with @var{object} and redisplay the associated row in the table.  In
-either case, if the existing object is not found in the table (being
-compared with @code{equal}), signal an error.
+@defun vtable-update-object table object &optional old-object sort-after
+Update @var{object}'s representation in @var{table}.  The table does not
+have to be the current table.  Optional argument @var{old-object}, if
+non-@code{nil}, means to replace @var{old-object} with @var{object} and
+redisplay the associated row in the table.  Columns which are inferred
+to be numeric will be scanned to reset their alignment and sort
+function.  If @var{sort-after} is non-nil, and the table has sorting
+criteria in effect, the table will be sorted and redisplayed after the
+object update.  In either case, if the existing object is not found in
+the table (being compared with @code{vtable-object-equal}), signal an
+error.
 
 This has the same effect as calling @code{vtable-remove-object} and
-then @code{vtable-insert-object}, but is more efficient.
+then @code{vtable-insert-object}, and is more efficient.
+@end defun
 
-Note a limitation: if the table's buffer is not in a visible window, or
-if its window has changed width since it was updated, updating the table
-is not possible, and an error is signaled.
+@defun vtable-revert &optional table
+Regenerate and redisplay the current table, or the table in @var{table}.
+@end defun
+
+@defun vtable-maybe-redisplay-range table &optional from-line to-line
+Redisplay @var{table}'s range of lines @var{from-line} and @var{to-line}
+if row/column colors or row/column color functions are defined.  If
+@var{from-line} is nil, use the first line of the table.  If
+@var{to-line} is nil, use the last line of the table.
+@end defun
+
+@defun vtable-redisplay-range table &optional from-line to-line
+Redisplay @var{table}'s range of lines @var{from-line} and
+@var{to-line}.  If @var{from-line} is nil, use the first line of the
+table.  If @var{to-line} is nil, use the last line of the table.  Unlike
+@code{vtable-maybe-redisplay-range}, always redisplay the specified
+lines.
 @end defun
 
 @defun vtable-column table index
 Return the column name of the @var{index}th column in @var{table}.
+@end defun
+
+@defun vtable-mark-object object &optional inhibit-next-line
+Mark @var{object} in the current table.  Point will be moved to the next
+line.  If @var{inhibit-next-line} is non-nil, point will not be
+advanced.
+@end defun
+
+@defun vtable-unmark-object object &optional inhibit-next-line
+Unmark @var{object} in the current table.  Point will be moved to the
+next line.  If @var{inhibit-next-line} is non-nil, point will not be
+advanced.
+@end defun
+
+@defun vtable-toggle-marked-object object
+Toggle the mark on @var{object} in the current table.
+@end defun
+
+@defun vtable-mark-objects table predicate
+Mark all objects in @var{table} for which the @var{predicate} function
+returns non-nil.  Each table object is passed to the predicate function.
+@end defun
+
+@defun vtable-mark-all-objects &rest _
+Mark all objects in the current table.  This can be called from a table
+@code{:action}.
+@end defun
+
+@defun vtable-unmark-all-objects &rest _
+Unmark all objects in the current table.  This can be called from a
+table @code{:action}.
+@end defun
+
+@defun vtable-marked-objects table
+Return a list of all marked objects in the current table.  The order of
+objects in the list is undefined.
+@end defun
+
+@defun vtable-object-marked-p table object
+Return @code{t} if @var{object} is marked in @var{table}.
+@end defun
+
+@defun vtable-extra-data table
+Return the extra data specified at @var{table} creation time, or as set
+by @code{vtable-set-extra-data}.
+@end defun
+
+@defun vtable-set-extra-data table extra-data
+Set @var{extra-data} in @var{table}.
+@end defun
+
+@defun vtable-column-extra-data column
+Return the extra data specified at @var{column} creation time, or as set
+by @code{vtable-column-set-extra-data}.
+@end defun
+
+@defun vtable-column-set-extra-data table column-or-index extra-data
+Set @var{extra-data} in @var{table}'s @var{column-or-index}.  If
+@var{column-or-index} is an integer, amend the column associated with
+the integer index, otherwise, it should be a column object.
 @end defun
 
 @node GNU Free Documentation License
