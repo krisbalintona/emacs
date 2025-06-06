@@ -1145,6 +1145,10 @@ set to t are never scanned and assumed to be numeric."
 (defun vtable--spacer (table)
   (vtable--compute-width table (vtable-separator-width table)))
 
+(defun vtable--text-scale-pixels (pixels)
+  ;; Adjust pixels for text-scaled buffers
+  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
+
 (defun vtable--recompute-cache (table)
   (let* ((data (vtable--compute-cache table))
          (widths (vtable--compute-widths table data))
