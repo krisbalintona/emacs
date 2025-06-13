@@ -124,6 +124,8 @@ In units of character-width.")
    (separator-width :initarg :separator-width
                     :accessor vtable-separator-width)
    (divider :initarg :divider :accessor vtable-divider :initform nil)
+   (divider-width :initarg :divider-width
+                  :accessor vtable-divider-width :initform nil)
    (divider-on-header :initarg :divider-on-header
                       :accessor vtable-divider-on-header :initform nil)
    (sort-by :initarg :sort-by :accessor vtable-sort-by)
@@ -192,13 +194,13 @@ In units of character-width.")
              (beginning-of-line)
              (scroll-right most-positive-fixnum))
   "n"      #'vtable-next-line
-  "C-n"    #'vtable-next-line
   "<down>" #'vtable-next-line
   "p"      #'vtable-previous-line
-  "C-p"    #'vtable-previous-line
   "<up>"   #'vtable-previous-line
   "<home>" #'vtable-goto-beginning-of-table
   "<end>"  #'vtable-goto-end-of-table
+  "<remap> <forward-paragraph>"  #'vtable-goto-next-table
+  "<remap> <backward-paragraph>" #'vtable-goto-previous-table
   "q"      #'vtable-close)
 
 (cl-defun make-vtable (&key columns objects objects-function
@@ -270,6 +272,7 @@ See info node `(vtable)Top' for vtable documentation."
           :actions actions
           :keymap keymap
           :separator-width separator-width
+          :divider-width divider-width
           :divider-on-header divider-on-header
           :sort-by sort-by
           :sort-indicator sort-indicator
@@ -324,16 +327,9 @@ See info node `(vtable)Top' for vtable documentation."
             (vtable--compute-colors row-colors column-colors)))
     ;; Compute the divider. For alignment, use the same face in the body
     ;; and on the header.
-    (when (or divider divider-width)
-      (let ((div
-             (propertize
-              (or (copy-sequence divider)
-                  (propertize " "
-                              'display (list 'space :width
-                                             (list
-                                              (vtable--compute-width
-                                               table divider-width)))))
-              'mouse-face 'highlight)))
+    (when divider
+      (let ((div (propertize (copy-sequence divider)
+                             'mouse-face 'highlight)))
         (add-face-text-property 0 (length div) face 'append div)
         (when (vtable-decor-intangible table)
           (add-text-properties 0 (length div)
@@ -640,8 +636,7 @@ possible, and an error is signaled."
                            (vtable-name table)))
                   (delete-line)
                   (vtable--insert-line table line line-number
-                                       (nth 1 cache)
-                                       (vtable--spacer table)))
+                                       (nth 1 cache)))
                 (when orig-column
                   (vtable-goto-object object)
                   (vtable-goto-column orig-column 'maybe-set-window-point)))
@@ -907,7 +902,7 @@ Consult the table's `:duplicate-objects' property."
                                     (vtable-beginning-of-table-line-number)))
                 (forward-line 0)
                 (vtable--insert-line table line line-index
-                                     (nth 1 cache) (vtable--spacer table)
+                                     (nth 1 cache)
                                      ellipsis)))
             ;; We may have inserted a non-numerical value into a previously
             ;; all-numerical table, so recompute.
@@ -973,8 +968,7 @@ If INHIBIT-RESTORE-POINT is non-nil, assume the caller handles point."
               (let ((line (elt (car cache) line-index)))
                 (delete-line)
                 (vtable--insert-line table line line-index
-                                     (nth 1 cache)
-                                     (vtable--spacer table)))
+                                     (nth 1 cache)))
               (cl-incf line-index)))
           (when (and (not inhibit-restore-point)
                      orig-point)
@@ -1143,11 +1137,17 @@ set to t are never scanned and assumed to be numeric."
       (vtable--recompute-numerical-from-objects table))))
 
 (defun vtable--spacer (table)
-  (vtable--compute-width table (vtable-separator-width table)))
+  (vtable--text-scale-pixels
+   (vtable--compute-width table (vtable-separator-width table))))
 
-(defun vtable--text-scale-pixels (pixels)
-  ;; Adjust pixels for text-scaled buffers
-  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
+(defun vtable--divider (table)
+  (or (vtable-divider table)
+      (propertize " "
+                  'display (list 'space :width
+                                 (list
+                                  (vtable--text-scale-pixels
+                                   (vtable--compute-width
+                                    table (vtable-divider-width table))))))))
 
 (defun vtable--recompute-cache (table)
   (let* ((data (vtable--compute-cache table))
@@ -1211,8 +1211,7 @@ into the same buffer, signal an error."
     (setq-local vtable--post-command-hooked table)))
 
 (defun vtable--insert (table)
-  (let* ((spacer (vtable--spacer table))
-         (start (point))
+  (let* ((start (point))
          (ellipsis (vtable-ellipsis table))
          ;; We maintain a cache per screen/window width, so that we render
          ;; correctly if Emacs is open on two different screens (or the
@@ -1222,11 +1221,11 @@ into the same buffer, signal an error."
     ;; specified the columns.
     (when (slot-value table '-has-column-spec)
       (if (vtable-use-header-line table)
-          (vtable--set-header-line table widths spacer)
+          (vtable--set-header-line table widths)
         ;; Insert the header line directly into the buffer, and put a
         ;; keymap to be able to sort the columns there (by clicking on
         ;; them).
-        (vtable--insert-header-line table widths spacer)
+        (vtable--insert-header-line table widths)
         (add-text-properties start (point)
                              (list 'rear-nonsticky t
                                    'vtable-header t
@@ -1243,8 +1242,7 @@ into the same buffer, signal an error."
       ;; Insert the data.
       (let ((line-number 0))
         (dolist (line (car cache))
-          (vtable--insert-line table line line-number widths spacer
-                               ellipsis)
+          (vtable--insert-line table line line-number widths ellipsis)
           (setq line-number (1+ line-number))))
       (add-text-properties start (point)
                            (list 'rear-nonsticky t
@@ -1273,7 +1271,7 @@ into the same buffer, signal an error."
 (defun vtable--refresh-window-cache (table window)
   ;; If a table's buffer window is selected, refresh the table's
   ;; window-width cache, if necessary.  This is called from a
-  ;; buffer-local hook and current-buffer is the table's buffer.
+  ;; buffer-local hook, so current-buffer is the table's buffer.
   (when (and (eq window (selected-window))
              (buffer-live-p (window-buffer window))
              (eq (window-buffer window) (current-buffer)))
@@ -1286,7 +1284,7 @@ into the same buffer, signal an error."
   (when (timerp vtable--resize-tables-timer)
     (cancel-timer vtable--resize-tables-timer))
   ;; Ensure the window is associated with the table.  This is called
-  ;; from a buffer-local hook and current-buffer is the table's buffer.
+  ;; from a buffer-local hook, so current-buffer is the table's buffer.
   (when (eq (window-buffer (or window (selected-window)))
             (current-buffer))
     (setq vtable--resize-tables-timer
@@ -1307,7 +1305,7 @@ into the same buffer, signal an error."
   (dolist (table (vtable--buffer-tables))
     (vtable--resize-table table)))
 
-(defun vtable--insert-line (table line line-number widths spacer
+(defun vtable--insert-line (table line line-number widths
                                   &optional ellipsis)
   (let* ((start (point))
          (buffer (vtable-buffer table))
@@ -1321,7 +1319,9 @@ into the same buffer, signal an error."
                    (elt (slot-value table '-cached-colors)
                         (mod line-number (length (vtable-row-colors table))))
                  (slot-value table '-cached-colors))))
-         (divider (vtable-divider table))
+         ;; spacer and divider, when in pixels, are text-scale adjusted
+         (spacer (vtable--spacer table))
+         (divider (vtable--divider table))
          ;; column-width is adjusted by indicator-pad-width for
          ;; pixel-alignment with the header line.
          (indicator-pad-width (string-pixel-width
@@ -1407,7 +1407,7 @@ into the same buffer, signal an error."
                 ;; On the last column, leave one char width.
                 (spacer (if last
                             (vtable--char-width table)
-                          (vtable--text-scale-pixels spacer)))
+                          spacer))
                 (spacer-str (propertize " "
                                         ;; 'face (list :box (list :line-width (cons -1 -1) :color "darkgray")) ; Keep for debugging.
                                         'display
@@ -1622,12 +1622,14 @@ Return non-nil if sorted, nil otherwise."
               (throw 'found (cons (string candidate) dir))))
           (cons nil nil))))))
 
-(defun vtable--insert-header-line (table widths spacer)
+(defun vtable--insert-header-line (table widths)
   ;; Insert the header directly into the buffer.
   (let* ((start (point))
          (buffer (vtable-buffer table))
          (header-face (vtable-header-face table))
-         (divider (vtable-divider table))
+         ;; spacer and divider, when in pixels, are text-scale adjusted
+         (spacer (vtable--spacer table))
+         (divider (vtable--divider table))
          (divider-pixels (string-pixel-width divider buffer))
          (divider-on-header (vtable-divider-on-header table))
          (drag-keymap (slot-value table '-cached-drag-keymap)))
@@ -1671,7 +1673,7 @@ Return non-nil if sorted, nil otherwise."
               (last (= index (1- (length (vtable-columns table)))))
               (spacer (if last
                           0
-                        (vtable--text-scale-pixels spacer)))
+                        spacer))
               (spacer-str (if last ""
                             (propertize " "
                                         ;; 'face (list :box (list :line-width (cons -1 -1) :color "darkgray")) ; Keep for debugging.
@@ -1821,7 +1823,7 @@ of columns, resize the clicked column."
                                         (- end-x start-x))))))))
 (put 'vtable--drag-resize-column 'completion-predicate #'ignore)
 
-(defun vtable--set-header-line (table widths spacer)
+(defun vtable--set-header-line (table widths)
   (let ((reference-buffer (vtable-buffer table)))
     (setq header-line-format
           (concat
@@ -1839,12 +1841,16 @@ of columns, resize the clicked column."
                 (if (local-variable-p v reference-buffer)
                     (set (make-local-variable v)
                          (buffer-local-value v reference-buffer))))
-              (vtable--insert-header-line table widths spacer)
+              (vtable--insert-header-line table widths)
               (add-text-properties (point-min)
                                    (point)
                                    (list 'vtable-header t
                                          'vtable table))
               (buffer-substring (point-min) (1- (point-max)))))))))
+
+(defun vtable--text-scale-pixels (pixels)
+  "Adjust PIXELS for text-scaled buffers."
+  (ceiling (* pixels (/ (float (default-font-width)) (frame-char-width)))))
 
 (defun vtable--limit-string (string pixels buffer &optional truncate-guess)
   "Truncate STRING to fit into width PIXELS.
@@ -2039,9 +2045,6 @@ If TABLE is nil, use the table under point."
     ;; `vtable-revert' is called by code, and the case where multiple
     ;; vtables share a buffer and revert is called via hooks to handle
     ;; `text-scale-mode' or changes to `display-line-numbers'.
-    ;;
-    ;; Save current point, object and column as delete-region, when point
-    ;; is in the current table, moves point to point-min.
     (let (orig-object
           orig-column
           (inhibit-read-only t))
@@ -2053,6 +2056,9 @@ If TABLE is nil, use the table under point."
         (delete-region (point) (vtable-end-of-table))
         (vtable--insert table))
       (when orig-object
+        ;; Need goto-table, if point is within the table's region, to
+        ;; accommodate delete-region moving point away.
+        (vtable-goto-table table)
         (vtable-goto-object orig-object)
         (vtable-goto-column orig-column 'maybe-set-window-point)))))
 
@@ -2063,43 +2069,32 @@ If TABLE is nil, use the table under point."
 
 (defun vtable-goto-next-table ()
   "Go to the next table in the buffer.
-If there is only a single table in the buffer, do nothing."
+Do nothing if no next table."
   (interactive)
-  (let (next-table-pos)
+  (let (match)
     (save-excursion
-      (vtable-end-of-table)
-      (setq next-table-pos (next-single-property-change (point) 'vtable))
-      (unless (and next-table-pos
-                   (get-text-property next-table-pos 'vtable))
-        (setq next-table-pos nil)))
-    (when next-table-pos
-      (goto-char next-table-pos)
+      ;; Find the next non-nil 'vtable, skipping the current table, if
+      ;; present.
+      (setq match (text-property-search-forward 'vtable
+                                                nil nil
+                                                (vtable-current-table))))
+    (when match
+      (goto-char (prop-match-beginning match))
       (vtable-goto-beginning-of-table))))
 
 (defun vtable-goto-previous-table ()
   "Go to the previous table in the buffer.
-If there is only a single table in the buffer, do nothing."
+Do nothing if no previous table."
   (interactive)
-  (let (previous-table-pos)
+  (let (match)
     (save-excursion
-      (vtable-beginning-of-table)
-      ;; The first property change takes point to just before the
-      ;; current table, or nil.
-      (setq previous-table-pos (previous-single-property-change (point) 'vtable))
-      ;; Move up one line and check if there's a table at point.
-      (when previous-table-pos
-        (goto-char previous-table-pos)
-        (forward-line -1)
-        (setq previous-table-pos (point))
-        ;; If not, then scan backwards one more time.
-        (unless (get-text-property previous-table-pos 'vtable)
-          (setq previous-table-pos (previous-single-property-change previous-table-pos 'vtable))
-          (when previous-table-pos
-            (forward-line -1)
-            (setq previous-table-pos (point))))))
-    (when (and previous-table-pos
-               (get-text-property previous-table-pos 'vtable))
-      (goto-char previous-table-pos)
+      ;; Find the previous non-nil 'vtable, skipping the current table,
+      ;; if present.
+      (setq match (text-property-search-backward 'vtable
+                                                 nil nil
+                                                 (vtable-current-table))))
+    (when match
+      (goto-char (prop-match-beginning match))
       (vtable-goto-beginning-of-table))))
 
 (defun vtable-narrow-current-column (&optional n)
