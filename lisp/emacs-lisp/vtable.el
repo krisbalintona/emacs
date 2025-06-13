@@ -1142,12 +1142,13 @@ set to t are never scanned and assumed to be numeric."
 
 (defun vtable--divider (table)
   (or (vtable-divider table)
-      (propertize " "
-                  'display (list 'space :width
-                                 (list
-                                  (vtable--text-scale-pixels
-                                   (vtable--compute-width
-                                    table (vtable-divider-width table))))))))
+      (when (vtable-divider-width table)
+        (propertize " "
+                    'display (list 'space :width
+                                   (list
+                                    (vtable--text-scale-pixels
+                                     (vtable--compute-width
+                                      table (vtable-divider-width table)))))))))
 
 (defun vtable--recompute-cache (table)
   (let* ((data (vtable--compute-cache table))
