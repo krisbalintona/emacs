@@ -1368,6 +1368,10 @@ rendering the value of this variable unambiguous.
 Should never be a symbolic name but always a revision number/hash.")
 
 (defun vc-deduce-backend ()
+  "Deduce the backend of a given buffer.
+Deduce the current backend based on `vc-buffer-overriding-fileset' and
+information in the current buffer, like the major mode and default
+directory."
   (cond ((car vc-buffer-overriding-fileset))
         ((derived-mode-p 'vc-dir-mode)   vc-dir-backend)
         ((derived-mode-p 'log-view-mode) log-view-vc-backend)
@@ -3993,7 +3997,7 @@ with its diffs (if the underlying VCS backend supports that)."
   "Show the change log for BRANCH in another window.
 The command prompts for the branch whose change log to show."
   (interactive
-   (let* ((backend (vc-responsible-backend default-directory))
+   (let* ((backend (vc-deduce-backend))
           (rootdir (vc-call-backend backend 'root default-directory)))
      (list
       (vc-read-revision "Branch to log: " (list rootdir) backend))))
