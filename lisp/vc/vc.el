@@ -1910,7 +1910,8 @@ remove from the list of ignored files."
            rel-dir
            current-prefix-arg)))
   (let* ((directory (or directory default-directory))
-	 (backend (or (vc-responsible-backend default-directory) ; tk
+	 (backend (or (vc-deduce-backend)
+                      (vc-responsible-backend default-directory)
                       (error "Unknown backend"))))
     (vc-call-backend backend 'ignore file directory remove)))
 
@@ -3513,7 +3514,9 @@ changes from the current branch."
 (defun vc-find-conflicted-file ()
   "Visit the next conflicted file in the current project."
   (interactive)
-  (let* ((backend (vc-deduce-backend))
+  (let* ((backend (or (vc-deduce-backend)
+                      (vc-responsible-backend default-directory)
+                      (error "No VC backend")))
          (root (vc-root-dir))
          (files (vc-call-backend backend
                                  'conflicted-files (or root default-directory))))
