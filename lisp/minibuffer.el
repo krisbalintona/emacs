@@ -1355,6 +1355,10 @@ overrides the default specified in `completion-category-defaults'."
            (cons :tag "Eager display"
                  (const :tag "Select one value from the menu."
                         eager-display)
+                 boolean)
+           (cons :tag "Eager update"
+                 (const :tag "Select one value from the menu."
+                        eager-update)
                  boolean))))
 
 (defun completion--category-override (category tag)
