@@ -1439,7 +1439,7 @@ BEWARE: this function may change the current buffer."
       (dired-vc-deduce-fileset state-model-only-files not-state-changing))
      ((and (derived-mode-p 'diff-mode) (not buffer-file-name))
       (diff-vc-deduce-fileset))
-     ((setq backend (vc-backend buffer-file-name))
+     ((setq backend (vc-deduce-backend))
       (if state-model-only-files
 	(list backend (list buffer-file-name)
 	      (list buffer-file-name)
@@ -1910,12 +1910,12 @@ remove from the list of ignored files."
            rel-dir
            current-prefix-arg)))
   (let* ((directory (or directory default-directory))
-	 (backend (or (vc-responsible-backend default-directory)
+	 (backend (or (vc-responsible-backend default-directory) ; tk
                       (error "Unknown backend"))))
     (vc-call-backend backend 'ignore file directory remove)))
 
 (defun vc--ignore-base-dir ()
-  (let ((backend (vc-responsible-backend default-directory)))
+  (let ((backend (vc-deduce-backend)))
     (condition-case nil
         (file-name-directory
          (vc-call-backend backend 'find-ignore-file
@@ -2205,7 +2205,7 @@ Return `deleted' if we actually undid/deleted a commit.
 Any other return value means we called `vc-start-logentry'."
   (cond*
    ((bind* (backend (or backend
-                        (vc-responsible-backend default-directory)))))
+                        (vc-responsible-backend default-directory))))) ; tk
    ((and reverse (not (eq delete 'never))
          (null (vc-find-backend-function backend
                                          'revision-published-p))
@@ -2352,7 +2352,7 @@ COMMENT and INITIAL-CONTENTS optional arguments:
 
 Optional argument BACKEND is the VC backend to use."
   (interactive (let ((rev (vc-read-revision "Revision to copy: "))
-                     (backend (vc-responsible-backend default-directory)))
+                     (backend (vc-deduce-backend)))
                  (list rev
                        (and current-prefix-arg
                             (vc-call-backend backend 'get-change-comment
@@ -2442,7 +2442,7 @@ PROMPT non-nil means to always get confirmation.  (This is passed by
 because they have single-letter bindings and don't otherwise prompt, so
 might be easy to use accidentally.)
 BACKEND is the VC backend."
-  (let ((backend (or backend (vc-responsible-backend default-directory))))
+  (let ((backend (or backend (vc-deduce-backend))))
     (unless (eq (vc-call-backend backend 'revision-granularity)
                 'repository)
       (error "Requires VCS with whole-repository revision granularity"))
@@ -2715,7 +2715,7 @@ in the output buffer."
       (insert patch-string))
     (setq buffer-read-only t)
     (diff-mode)
-    (setq-local diff-vc-backend (vc-responsible-backend default-directory))
+    (setq-local diff-vc-backend (vc-deduce-backend)) ; tk
     (setq-local revert-buffer-function
                 (lambda (_ _) (vc-diff-patch-string patch-string)))
     (setq-local vc-patch-string patch-string)
@@ -3513,9 +3513,7 @@ changes from the current branch."
 (defun vc-find-conflicted-file ()
   "Visit the next conflicted file in the current project."
   (interactive)
-  (let* ((backend (or (if buffer-file-name (vc-backend buffer-file-name))
-                      (vc-responsible-backend default-directory)
-                      (error "No VC backend")))
+  (let* ((backend (vc-deduce-backend))
          (root (vc-root-dir))
          (files (vc-call-backend backend
                                  'conflicted-files (or root default-directory))))
@@ -3556,9 +3554,10 @@ In interactive use, DIR is `default-directory' for repository-granular
 VCSes (all the modern decentralized VCSes belong to this group),
 otherwise the command will prompt for DIR."
   (interactive
-   (let ((granularity
-	  (vc-call-backend (vc-responsible-backend default-directory)
-			   'revision-granularity)))
+   (let ((backend
+          (or (vc-deduce-backend) (vc-responsible-backend default-directory)))
+         (granularity
+	  (vc-call-backend backend 'revision-granularity)))
      (list
       (if (eq granularity 'repository)
 	  ;; For VC's that do not work at file level, it's pointless
@@ -3570,7 +3569,8 @@ otherwise the command will prompt for DIR."
       current-prefix-arg)))
   (message "Making %s... " (if branchp "branch" "tag"))
   (when (file-directory-p dir) (setq dir (file-name-as-directory dir)))
-  (vc-call-backend (vc-responsible-backend dir)
+  (vc-call-backend (or (vc-deduce-backend)
+                       (vc-responsible-backend default-directory))
 		   'create-tag dir name branchp)
   (vc-resynch-buffer dir t t t)
   (message "Making %s... done" (if branchp "branch" "tag")))
@@ -3595,9 +3595,10 @@ all the known branches and tags in the repository.
 
 This command invokes `vc-create-tag' with the non-nil BRANCHP argument."
   (interactive
-   (let ((granularity
-          (vc-call-backend (vc-responsible-backend default-directory)
-                           'revision-granularity)))
+   (let ((backend
+          (or (vc-deduce-backend) (vc-responsible-backend default-directory)))
+         (granularity
+          (vc-call-backend backend 'revision-granularity)))
      (list
       (if (eq granularity 'repository)
           default-directory
@@ -3621,9 +3622,8 @@ branch and check out and update the files to their version on that branch.
 In this case NAME may not be empty.
 This function runs the hook `vc-retrieve-tag-hook' when finished."
   (interactive
-   (let* ((granularity
-           (vc-call-backend (vc-responsible-backend default-directory)
-                            'revision-granularity))
+   (let* ((backend (vc-deduce-backend))
+          (granularity (vc-call-backend backend 'revision-granularity))
           (dir
            (if (eq granularity 'repository)
                ;; For VC's that do not work at file level, it's pointless
@@ -3637,12 +3637,11 @@ This function runs the hook `vc-retrieve-tag-hook' when finished."
                                  "Switch to branch: "
                                (format-prompt "Tag name to retrieve"
                                               "latest revisions"))
-                             (list dir)
-                             (vc-responsible-backend dir))
+                             (list dir) backend)
            current-prefix-arg)))
   (unless (or (not branchp) (and name (not (string-empty-p name))))
     (user-error "Branch name required"))
-  (let* ((backend (vc-responsible-backend dir))
+  (let* ((backend (vc-deduce-backend))
          (update (when (vc-call-backend backend 'update-on-retrieve-tag)
                    (yes-or-no-p "Update any affected buffers? ")))
 	 (msg (if (or (not name) (string= name ""))
@@ -3666,17 +3665,14 @@ After switching to the branch, check out and update the files to their
 version on that branch.
 Uses `vc-retrieve-tag' with the non-nil arg `branchp'."
   (interactive
-   (let* ((granularity
-           (vc-call-backend (vc-responsible-backend default-directory)
-                            'revision-granularity))
+   (let* ((backend (vc-deduce-backend))
+          (granularity (vc-call-backend backend 'revision-granularity))
           (dir
            (if (eq granularity 'repository)
                (expand-file-name (vc-root-dir))
              (read-directory-name "Directory: " default-directory nil t))))
      (list dir
-           (vc-read-revision "Switch to branch: "
-                             (list dir)
-                             (vc-responsible-backend dir)))))
+           (vc-read-revision "Switch to branch: " (list dir) backend))))
   (vc-retrieve-tag dir name t))
 
 ;; Miscellaneous other entry points
@@ -4003,7 +3999,7 @@ The command prompts for the branch whose change log to show."
       (vc-read-revision "Branch to log: " (list rootdir) backend))))
   (when (equal branch "")
     (error "No branch specified"))
-  (let* ((backend (vc-responsible-backend default-directory))
+  (let* ((backend (vc-deduce-backend))
          (rootdir (vc-call-backend backend 'root default-directory)))
     (vc-print-log-internal backend
                            (list rootdir) branch t
@@ -4609,7 +4605,7 @@ log entries should be gathered."
           ;; it should find all relevant files relative to
           ;; the default-directory.
 	  nil)))
-  (vc-call-backend (vc-responsible-backend default-directory)
+  (vc-call-backend (or (vc-deduce-backend) (vc-responsible-backend default-directory))
                    'update-changelog args))
 
 (defvar vc-filter-command-function)
@@ -4730,12 +4726,12 @@ When invoked interactively in a Log View buffer with
 marked revisions, use those."
   (interactive
    (let* ((revs (vc-prepare-patch-prompt-revisions))
+          (backend
+           (or (vc-deduce-backend) (vc-responsible-backend default-directory)))
           (subject
            (and (length= revs 1)
                 (plist-get
-                 (vc-call-backend
-                  (vc-responsible-backend default-directory)
-                  'prepare-patch (car revs))
+                 (vc-call-backend backend 'prepare-patch (car revs))
                  :subject)))
           to)
      (require 'message)
@@ -4753,10 +4749,10 @@ marked revisions, use those."
                 (read-string "Subject: " (or subject "[PATCH] ") nil nil t))
            revs)))
   (save-current-buffer
-    (let ((patches (mapcar (lambda (rev)
-                             (vc-call-backend
-                              (vc-responsible-backend default-directory)
-                              'prepare-patch rev))
+    (let ((backend
+           (or (vc-deduce-backend) (vc-responsible-backend default-directory)))
+          (patches (mapcar (lambda (rev)
+                             (vc-call-backend backend 'prepare-patch rev))
                            revisions)))
       (if vc-prepare-patches-separately
           (cl-loop with l = (length patches)
@@ -4999,7 +4995,7 @@ yourself with a function like `vc-file-tree-walk'."
   (let ((morep t) results)
     (with-temp-buffer
       (setq default-directory directory)
-      (vc-call-backend (or backend (vc-responsible-backend directory))
+      (vc-call-backend (or backend (vc-responsible-backend directory)) ; tk
                        'dir-status-files directory files
                        (lambda (entries &optional more-to-come)
                          (let (entry)
@@ -5025,7 +5021,7 @@ When called interactively, prompts for DIRECTORY.
 When called from Lisp, BACKEND is the VC backend."
   (interactive
    (list
-    (vc-responsible-backend default-directory)
+    (or (vc-deduce-backend) (vc-responsible-backend default-directory))
     (read-directory-name "Location for new working tree: "
                          (file-name-parent-directory
                           (or (vc-root-dir)
@@ -5097,7 +5093,8 @@ name relative to DIRECTORY that this buffer's file has relative
 to the root of this working tree."
   (interactive
    (list
-    (vc--prompt-other-working-tree (vc-responsible-backend default-directory)
+    (vc--prompt-other-working-tree (or (vc-deduce-backend)
+                                       (vc-responsible-backend default-directory))
                                    "Other working tree to visit")))
   (let ((project-current-directory-override directory))
     (project-find-matching-buffer)))
@@ -5112,7 +5109,8 @@ Prompts for the directory file name of the other working tree."
   (declare (interactive-only project-switch-project))
   (interactive
    (list
-    (vc--prompt-other-working-tree (vc-responsible-backend default-directory)
+    (vc--prompt-other-working-tree (or (vc-deduce-backend)
+                                       (vc-responsible-backend default-directory))
                                    "Other working tree to switch to")))
   (project-switch-project dir))
 
@@ -5123,7 +5121,7 @@ Must be called from within an existing VC working tree.
 When called interactively, prompts for DIRECTORY.
 BACKEND is the VC backend."
   (interactive
-   (let ((backend (vc-responsible-backend default-directory)))
+   (let ((backend (or (vc-deduce-backend) (vc-responsible-backend default-directory))))
      (list backend
            (vc--prompt-other-working-tree backend "Delete working tree"
                                           'allow-empty))))
@@ -5169,7 +5167,7 @@ When called interactively, prompts for the directory file names of each
 of the other working trees FROM and TO.
 BACKEND is the VC backend."
   (interactive
-   (let ((backend (vc-responsible-backend default-directory)))
+   (let ((backend (or (vc-deduce-backend) (vc-responsible-backend default-directory))))
      (list backend
            (vc--prompt-other-working-tree backend "Relocate working tree"
                                           'allow-empty)
@@ -5240,7 +5238,7 @@ tree, it is an error, and no changes are moved."
   (interactive
    (list
     (vc--prompt-other-working-tree
-     (vc-responsible-backend default-directory)
+     (or (vc-deduce-backend) (vc-responsible-backend default-directory))
      (format "%s changes to working tree"
              (if current-prefix-arg "Move" "Apply")))
     current-prefix-arg))
@@ -5280,7 +5278,7 @@ tree, it is an error, and no changes are moved."
   (interactive
    (list
     (vc--prompt-other-working-tree
-     (vc-responsible-backend default-directory)
+     (or (vc-deduce-backend) (vc-responsible-backend default-directory))
      (format "%s changes to working tree"
              (if (equal current-prefix-arg '(4)) "Move" "Apply")))
     (equal current-prefix-arg '(4))
@@ -5502,7 +5500,8 @@ BACKEND is the VC backend.
 
 This command kills the buffers that \\[vc-switch-working-tree] switches to,
 except that this command works only in file-visiting buffers."
-  (interactive (list (vc-responsible-backend default-directory)))
+  (interactive (list (or (vc-deduce-backend)
+                         (vc-responsible-backend default-directory))))
   (when (cdr uniquify-managed)
     (cl-loop with trees = (vc-call-backend backend
                                            'known-other-working-trees)
@@ -5517,7 +5516,7 @@ except that this command works only in file-visiting buffers."
   (if reverse (format "Summary: Reverse-apply changes from revision %s\n\n"
                       rev)
     (and-let* ((fn (vc-find-backend-function
-                    (vc-responsible-backend default-directory)
+                    (or (vc-deduce-backend) (vc-responsible-backend default-directory))
                     'get-change-comment)))
       (format "Summary: %s\n" (string-trim (funcall fn files rev))))))
 
