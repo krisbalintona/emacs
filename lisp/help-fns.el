@@ -631,7 +631,7 @@ the C sources, too."
                   (princ (if (symbolp remapped)
                              (format-message "`%s'" remapped)
 		           "an anonymous command"))
-                  (princ "as well.\n"))
+                  (princ " as well.\n"))
                 ;; The (= (point) start) condition tests whether
                 ;; 'help-fns--insert-menu-bindings' inserted anything;
                 ;; if it didn't, we already have a period from the
