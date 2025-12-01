@@ -3203,7 +3203,7 @@ last sub-node, if any; otherwise go \"up\" to the parent node."
 	       (goto-char (point-max)))))
 	(t (user-error "No previous nodes"))))
 
-(defun Info-scroll-up ()
+(defun Info-scroll-up (&optional arg)
   "Scroll one screenful forward in Info, considering all nodes as one sequence.
 Once you scroll far enough in a node that its menu appears on the screen
 but after point, the next scroll moves into its first subnode, unless
@@ -3215,9 +3215,11 @@ if this node has no successor, it moves to the parent node's successor,
 and so on.  If `Info-scroll-prefer-subnodes' is non-nil and point is inside
 the menu of a node, it moves to subnode indicated by the following menu
 item.  (That case won't normally result from this command, but can happen
-in other ways.)"
+in other ways.)
 
-  (interactive nil Info-mode)
+When ARG is non-nil (interactively, the prefix argument), this command
+instead behaves like `scroll-up-command' with ARG (which see)."
+  (interactive "P" Info-mode)
   (if (or (< (window-start) (point-min))
 	  (> (window-start) (point-max)))
       (set-window-start (selected-window) (point)))
@@ -3228,13 +3230,14 @@ in other ways.)"
 				 (search-forward "\n* Menu:" nil t))
 			    (point)
 			  (point-max)))))
-    (if (or (< virtual-end (window-start))
-	    (pos-visible-in-window-p virtual-end))
+    (if (and (not arg)
+             (or (< virtual-end (window-start))
+	         (pos-visible-in-window-p virtual-end)))
 	(cond
 	 (Info-scroll-prefer-subnodes (Info-next-preorder))
 	 ((Info-no-error (Info-goto-node (Info-extract-menu-counting 1))))
 	 (t (Info-next-preorder)))
-      (scroll-up))))
+      (scroll-up arg))))
 
 (defun Info-mouse-scroll-up (e)
   "Scroll one screenful forward in Info, using the mouse.
@@ -3245,13 +3248,16 @@ See `Info-scroll-up'."
 	(select-window (posn-window (event-start e))))
     (Info-scroll-up)))
 
-(defun Info-scroll-down ()
+(defun Info-scroll-down (&optional arg)
   "Scroll one screenful back in Info, considering all nodes as one sequence.
 If point is within the menu of a node, and `Info-scroll-prefer-subnodes'
 is non-nil, this goes to its last subnode.  When you scroll past the
 beginning of a node, that goes to the previous node or back up to the
-parent node."
-  (interactive nil Info-mode)
+parent node.
+
+When ARG is non-nil (interactively, the prefix argument), this command
+instead behaves like `scroll-down-command' with ARG (which see)."
+  (interactive "P" Info-mode)
   (if (or (< (window-start) (point-min))
 	  (> (window-start) (point-max)))
       (set-window-start (selected-window) (point)))
@@ -3263,10 +3269,11 @@ parent node."
 		 (setq current-point (line-beginning-position))
 		 (goto-char (point-min))
 		 (search-forward "\n* Menu:" current-point t)))))
-    (if (or virtual-end
-	    (pos-visible-in-window-p (point-min) nil t))
+    (if (and (not arg)
+             (or virtual-end
+	         (pos-visible-in-window-p (point-min) nil t)))
 	(Info-last-preorder)
-      (scroll-down))))
+      (scroll-down arg))))
 
 (defun Info-mouse-scroll-down (e)
   "Scroll one screenful backward in Info, using the mouse.
