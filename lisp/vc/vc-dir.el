@@ -279,8 +279,11 @@ That is, refreshing the VC-Dir buffer also hides `up-to-date' and
       '(menu-item "Open File" vc-dir-find-file
 		  :help "Find the file on the current line"))
     (define-key map [delete]
-      '(menu-item "Delete" vc-dir-clean-files
-		  :help "Delete the unregistered marked files"))
+                '(menu-item "Delete" vc-dir-delete-files
+                            :help "Delete the registered marked files"))
+    (define-key map [clean]
+                '(menu-item "Clean" vc-dir-clean-files
+                            :help "Delete the unregistered marked files"))
     (define-key map [sepvcdet] '("--"))
     ;; FIXME: This needs a key binding.  And maybe a better name
     ;; ("Insert" like PCL-CVS uses does not sound that great either)...
@@ -364,7 +367,8 @@ That is, refreshing the VC-Dir buffer also hides `up-to-date' and
     ;;                                     bound by `special-mode'.
     ;; Marking.
     (define-key map "m" #'vc-dir-mark)
-    (define-key map "d" #'vc-dir-clean-files)
+    (define-key map "d" #'vc-dir-delete-files)
+    (define-key map "C-k" #'vc-dir-clean-files)
     (define-key map "M" #'vc-dir-mark-all-files)
     (define-key map "u" #'vc-dir-unmark)
     (define-key map "U" #'vc-dir-unmark-all-files)
@@ -1025,7 +1029,7 @@ tracked by a VCS."
     (map-y-or-n-p "Delete %s? " #'delete-file files)
     (revert-buffer)))
 
-(defun vc-dir-delete-file ()
+(defun vc-dir-delete-files ()
   "Delete the marked files, or the current file if no marks.
 The files will also be marked as deleted in the version control
 system."
