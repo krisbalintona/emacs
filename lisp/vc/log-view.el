@@ -331,20 +331,37 @@ If there is no entry at POS, return nil.
 
 If optional arg MOVE is non-nil, move point to BEG if found.
 Otherwise, don't move point."
-  (let ((looping t)
-	result)
+  (let ((re log-view-message-re)
+        beg result)
     (save-excursion
       (when pos (goto-char pos))
-      (forward-line 0)
-      ;; Treat "---" separator lines as part of the following revision.
-      (forward-line (if (looking-at "-\\{20,\\}$") 2 1))
-      (while looping
-	(setq pos (re-search-backward log-view-message-re nil 'move)
-	      looping (and pos (log-view-inside-comment-p (point)))))
-      (when pos
+      ;; Set BEG to the entry at POS.  First determine whether point
+      ;; lies inside a log entry by doing:
+      ;; 1. Search backward for RE and take that match’s end (or
+      ;;    `point-min' if no match was found).
+      ;; 2. From that position, search forward for RE.  If POS is within
+      ;;    the beginning and end of the resulting match, then POS was
+      ;;    within a region matched by RE.  Therefore, use that match’s
+      ;;    beginning as BEG.
+      ;; Otherwise, if POS wasn't within a region matched by RE, then
+      ;; just match RE backward.
+      ;;
+      ;; Checking whether POS is within a region matched by RE covers
+      ;; cases where `log-view-message-re' is a multi-line regexp.
+      (end-of-line)
+      (setq beg
+            (if (and (save-excursion
+                       (goto-char (if (re-search-backward re nil t)
+                                      (match-end 0)
+                                    (point-min)))
+                       (re-search-forward re nil t))
+                     (< (match-beginning 0) (point) (match-end 0)))
+                (match-beginning 0)
+              (re-search-backward re nil t)))
+      (when beg
 	(setq result
-	      (list pos (match-string-no-properties 1)))))
-    (and move result (goto-char pos))
+	      (list beg (match-string-no-properties 1)))))
+    (and move result (goto-char beg))
     result))
 
 (defun log-view-inside-comment-p (pos)
